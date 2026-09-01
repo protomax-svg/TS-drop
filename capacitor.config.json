@@ -1,0 +1,18 @@
+{
+  "appId": "net.tsdrop.app",
+  "appName": "TSDROP",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#0b0c0c"
+  },
+  "server": {
+    "cleartext": true
+  },
+  "backgroundColor": "#0b0c0c",
+  "plugins": {
+    "SystemBars": {
+      "style": "DARK"
+    }
+  }
+}

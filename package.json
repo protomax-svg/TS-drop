@@ -1,0 +1,99 @@
+{
+  "name": "tsdrop",
+  "version": "1.9.9",
+  "description": "Tailscale chat + file transfer over Nextcloud WebDAV",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "electron": "electron .",
+    "start": "concurrently -k \"vite\" \"wait-on tcp:5173 && VITE_DEV_SERVER=1 electron . --no-sandbox\"",
+    "dist:linux": "vite build && electron-builder --linux",
+    "dist:win": "vite build && electron-builder --win",
+    "sync:android": "vite build && cap sync android",
+    "apk": "vite build && cap sync android && cd android && ./gradlew assembleDebug",
+    "selftest": "node selftest.mjs",
+    "dist": "vite build && electron-builder --linux --win"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/share": "^8.0.1",
+    "@capawesome/capacitor-file-picker": "^8.0.4",
+    "exceljs": "^4.4.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
+    "@vitejs/plugin-react": "^6.1.0",
+    "concurrently": "^10.0.5",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.15.3",
+    "vite": "^8.2.2",
+    "wait-on": "^9.1.0"
+  },
+  "build": {
+    "appId": "net.tsdrop.app",
+    "productName": "TSDROP",
+    "artifactName": "TSDROP-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network",
+      "maintainer": "max <denys.chykalov@rankberry.marketing>",
+      "icon": "build/icon.png",
+      "executableName": "tsdrop",
+      "desktop": {
+        "entry": {
+          "X-KDE-Shortcuts": "Ctrl+Ins",
+          "StartupWMClass": "TSDROP",
+          "Keywords": "tailscale;transfer;chat;"
+        }
+      },
+      "synopsis": "Chat + file transfer over your tailnet, stored in Nextcloud",
+      "description": "TSDROP moves text, tags and files of any size between your Tailscale devices. Everything lives in your own Nextcloud over WebDAV.",
+      "syncDesktopName": true
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "build/icon.ico",
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "TSDROP",
+      "createDesktopShortcut": true,
+      "artifactName": "TSDROP-Setup-${version}.exe"
+    },
+    "portable": {
+      "artifactName": "TSDROP-portable-${version}.exe"
+    }
+  },
+  "homepage": "https://tsdrop.local",
+  "author": {
+    "name": "max",
+    "email": "denys.chykalov@rankberry.marketing"
+  },
+  "license": "MIT",
+  "desktopName": "tsdrop.desktop"
+}

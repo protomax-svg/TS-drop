@@ -1,0 +1,19 @@
+node_modules/
+dist/
+release/
+
+# secrets — never commit
+android/keystore.properties
+android/*.keystore
+android/*.jks
+android/local.properties
+.env
+.env.*
+
+# build junk
+android/.gradle/
+android/build/
+android/app/build/
+android/capacitor-cordova-android-plugins/build/
+android/app/src/main/assets/public/
+*.log

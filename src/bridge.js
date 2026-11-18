@@ -20,10 +20,11 @@ if (NATIVE) Dav.addListener('progress', p => emit(p.url, p.loaded, p.total))
 // Dev in a plain browser goes through the Vite proxy (CORS).
 const devUrl = u => { const p = new URL(u); return '/dav' + p.pathname + p.search }
 
-export async function request (method, url, { headers = {}, body } = {}) {
-  if (E) return E.req({ method, url, headers, body })
+/** timeout (ms) is for probes only - a transfer must be allowed to take as long as it takes. */
+export async function request (method, url, { headers = {}, body, timeout } = {}) {
+  if (E) return E.req({ method, url, headers, body, timeout })
   if (NATIVE) {
-    const r = await Dav.request({ method, url, headers, body: body == null ? null : String(body) })
+    const r = await Dav.request({ method, url, headers, body: body == null ? null : String(body), timeout: timeout || 0 })
     return { status: r.status, text: r.data || '' }
   }
   const r = await fetch(devUrl(url), { method, headers, body })
@@ -91,10 +92,12 @@ export async function uploadFile (url, headers, file, onProgress, key) {
   } finally { prog.delete(url) }
 }
 
-export async function downloadFile (url, headers, name, onProgress, key, saveAs) {
+/** dir: desktop only - android and web have no say over where a download lands.
+    ponytail: a folder picker on android means the SAF tree API, add it when someone asks. */
+export async function downloadFile (url, headers, name, onProgress, key, saveAs, dir) {
   if (onProgress) prog.set(url, onProgress)
   try {
-    if (E) return await E.download({ id: url, url, headers, name, key, saveAs })
+    if (E) return await E.download({ id: url, url, headers, name, key, saveAs, dir })
     if (NATIVE) return (await Dav.download({ url, headers, name, key })).path
     let bytes = new Uint8Array(await (await fetch(devUrl(url), { headers })).arrayBuffer())
     if (key) bytes = await decryptBytes(unb64(key), bytes)
@@ -186,13 +189,64 @@ export const getDownloadDir = () => (E ? E.getDownloadDir() : Promise.resolve(''
 export const setDownloadDir = p => (E ? E.setDownloadDir(p) : Promise.resolve(''))
 
 export const dropPaths = list => (E ? list.map(f => E.pathOf(f)).filter(Boolean).map(p => E.stat(p)) : [])
+
+/** Files dropped into the chat compose box: direct mode serves straight off disk, so it needs
+    a real path. Desktop already resolves one; android's drop event never carries one, so copy
+    through a temp file the same way pasteFiles does. Web has no filesystem to write to. */
+export async function dropFiles (list) {
+  if (E) return (await Promise.all(dropPaths(list))).filter(Boolean)
+  if (!NATIVE) return list.map(x => ({ name: x.name, size: x.size, blob: x }))
+  const out = []
+  for (const f of list) {
+    const raw = new Uint8Array(await f.arrayBuffer())
+    const r = await Dav.writeTemp({ name: f.name, data: b64(raw) })
+    out.push({ name: f.name, size: r.size, path: r.path })
+  }
+  return out
+}
 /** Android 9 and older need a write permission before media can reach the gallery. */
 export const ensureStorage = () => (NATIVE ? Dav.requestStorage().catch(() => {}) : Promise.resolve())
 /** file:// is not a secure context, so the desktop copies through the main process. */
+/** The text of a QR in an image. Android's webview has a decoder built in; the desktop has
+    none, so it shells out to zbarimg, and says what to install when that is missing too.
+    Returns '' when the picture simply holds no QR. */
+export async function decodeQr (f) {
+  const Det = typeof window !== 'undefined' ? window.BarcodeDetector : null
+  if (Det) {
+    const formats = await Det.getSupportedFormats().catch(() => [])
+    if (formats.includes('qr_code')) {
+      const bytes = f.blob ? null : await readBytes(f)
+      const bmp = await createImageBitmap(f.blob || new Blob([bytes]))
+      try {
+        const hits = await new Det({ formats: ['qr_code'] }).detect(bmp)
+        if (hits.length) return hits.map(h => h.rawValue).join('\n')
+      } finally { bmp.close() }
+    }
+  }
+  if (E && f.path) {
+    const r = await E.qr(f.path)
+    if (r && r.err) throw new Error(r.err)
+    return (r && r.text) || ''
+  }
+  return ''
+}
+
 export const copyText = t => (E ? E.copy(String(t)) : navigator.clipboard.writeText(String(t)))
 export const tailscale = () => (E ? E.tailscale() : Promise.resolve(null))
 export const hideWindow = () => (E ? E.hide() : null)
-/** widen the desktop window by px so the file manager gets its own column instead of overlapping */
-export const growWindow = px => (E && E.grow ? E.grow(px) : null)
+/** The palette the desktop itself is themed with (Omarchy), or null anywhere else. */
+export const desktopTheme = () => (E && E.desktopTheme ? E.desktopTheme() : Promise.resolve(null))
+export const onDesktopTheme = cb => { if (E && E.onDesktopTheme) E.onDesktopTheme(cb) }
+/** The OS share sheet (telegram, signal, mail…). paths are what downloadFile() handed back.
+    Returns false where there is no sheet to open - desktop linux/windows have none. */
+export async function shareTo (paths, text) {
+  if (NATIVE) { await Dav.share({ paths: paths || [], text: text || '' }); return true }
+  if (!E && navigator.share) { await navigator.share({ text: text || '' }); return true }
+  return false
+}
+/** Only android can hand real FILES to another app. A browser's navigator.share would need
+    the bytes back in memory as File objects, so there the caller saves them instead. */
+export const CAN_SHARE = NATIVE
+
 /** desktop: show in file manager. android: open it (gallery for media, picker otherwise). */
 export const reveal = p => (E ? E.reveal(p) : NATIVE ? Dav.open({ path: p }).catch(() => Share.share({ files: [p] }).catch(() => {})) : null)

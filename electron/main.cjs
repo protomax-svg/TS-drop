@@ -7,9 +7,18 @@ const { execFile } = require('child_process')
 const os = require('os')
 const crypto = require('crypto')
 const { pipeline } = require('stream')
+const zlib = require('zlib')
 
 const { Seal, Open, keyBuf } = require('./gcm.cjs')
 const { fetchHead } = require('./og.cjs')
+const omarchy = require('./omarchy.cjs')
+
+/* Wayland compositors place windows themselves and ignore setPosition, and they
+   hand global hotkeys to the compositor, not to us. Both are the compositor's
+   call, not a bug to work around here - see the Omarchy section of the README
+   for the two lines of Hyprland config that do the same job. */
+const WAYLAND = process.platform === 'linux' &&
+  (process.env.XDG_SESSION_TYPE === 'wayland' || !!process.env.WAYLAND_DISPLAY)
 
 /* ---------------- direct mode: serve our own files over the tailnet ----------------
    The bytes never touch Nextcloud. They stay here until the other device pulls them.
@@ -60,25 +69,32 @@ function startBlobServer () {
 }
 
 const DEV = !!process.env.VITE_DEV_SERVER
+/* widest the drawer breakpoint reaches (NARROW, 850px in App.jsx) plus room for the chat beside it */
+const SIDEBAR_W = 900
 let win = null
 let tray = null
-let grown = 0        // px the file manager pane adds to the window width right now
-let lastGrow = 380   // the width the pane had when last open, restored on reopen
-let lastW = 0        // last width the resize watcher saw
-/* With the file manager open the chat pane is pinned in CSS, so every manual width change
-   the user makes belongs to that pane. Tracking it keeps closing the pane exact. */
-const watchResize = () => {
-  if (!win || win.isDestroyed()) return
-  const [w] = win.getSize()
-  if (lastW && grown > 0) { grown = Math.max(0, grown + (w - lastW)); if (grown > 0) lastGrow = grown }
-  lastW = w
-}
-
 const lib = u => (u.startsWith('https') ? https : http)
 
 const SIZE_FILE = () => path.join(app.getPath('userData'), 'window.json')
 const readSize = () => { try { return JSON.parse(fs.readFileSync(SIZE_FILE(), 'utf8')) } catch (_) { return null } }
-const saveSize = () => { try { if (win && !win.isDestroyed()) { const [w, h] = win.getSize(); fs.writeFileSync(SIZE_FILE(), JSON.stringify({ w: w - grown, h })) } } catch (_) {} }
+/* Wayland gives a frameless window a resize border of its own, so the surface
+   comes out a little larger than the size we asked for - 12x22 px on Hyprland.
+   Writing that back down would make the window grow by that much on every
+   restart, so the margin is measured once and taken off again. */
+let chrome = { w: 0, h: 0 }
+/* And a tiling compositor resizes the window to fill its slot, which is the
+   layout's idea rather than the user's: remembering it would turn the popup
+   into a full-height column for good. Anything that fills the screen is taken
+   as the compositor talking, and is not written down. */
+const saveSize = () => {
+  try {
+    if (!win || win.isDestroyed()) return
+    const [w, h] = win.getSize()
+    const wa = screen.getDisplayNearestPoint(win.getBounds()).workArea
+    if (w >= wa.width * 0.95 || h >= wa.height * 0.95) return
+    fs.writeFileSync(SIZE_FILE(), JSON.stringify({ w: w - chrome.w, h: h - chrome.h }))
+  } catch (_) {}
+}
 
 const PREFS_FILE = () => path.join(app.getPath('userData'), 'prefs.json')
 let prefs = null
@@ -93,7 +109,7 @@ const downloadDir = () => {
 
 /** Put the popup on the tray icon, not in the middle of the screen. */
 function place () {
-  if (!win) return
+  if (!win || WAYLAND) return   // Wayland: the compositor owns placement, a window rule does this
   const b = win.getBounds()
   const t = tray ? tray.getBounds() : null
   const anchored = !!(t && (t.width > 0 || t.height > 0))
@@ -126,16 +142,37 @@ function toggle () {
 function createWindow () {
   const wa = screen.getPrimaryDisplay().workAreaSize
   const saved = readSize() || {}
+  const t = omarchy.theme()
+  /* The container list is a drawer below 850px (NARROW in App.jsx) and a column above it. The window
+     opens wide enough for the column whatever narrower size it was last left at, so the
+     sidebar is simply there on every start; resizing down during a session still works. */
+  const want = {
+    w: Math.min(Math.max(saved.w || 0, SIDEBAR_W), wa.width - 20),
+    h: Math.min(saved.h || 860, wa.height - 20),
+  }
   win = new BrowserWindow({
-    width: Math.min(saved.w || 520, wa.width - 20),
-    height: Math.min(saved.h || 860, wa.height - 20),
+    width: want.w,
+    height: want.h,
     minWidth: 340, minHeight: 420,
-    frame: false, backgroundColor: '#0b0c0c', autoHideMenuBar: true, show: false,
+    // the desktop's own background, so the first frame is not a black flash
+    frame: false, backgroundColor: (t && t.colors.background) || '#0b0c0c', autoHideMenuBar: true, show: false,
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false },
   })
-  win.once('ready-to-show', () => { place(); win.show() })
+  win.once('ready-to-show', () => {
+    place()
+    win.show()
+    /* The surface only takes its real size once the compositor has mapped it, a
+       moment after show(), so the margin is measured then and not before. A
+       window the compositor has tiled instead is much bigger than it asked for -
+       that is the layout, not a frame, so the margin stays zero. */
+    setTimeout(() => {
+      if (!win || win.isDestroyed()) return
+      const [w, h] = win.getSize()
+      const dw = w - want.w; const dh = h - want.h
+      if (dw >= 0 && dw < 60 && dh >= 0 && dh < 60) chrome = { w: dw, h: dh }
+    }, 500)
+  })
   win.on('hide', saveSize)
-  win.on('resize', watchResize)
   win.on('close', e => { if (!app.quitting) { e.preventDefault(); win.hide() } })
   if (DEV) win.loadURL('http://localhost:5173')
   else win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'))
@@ -149,13 +186,20 @@ app.whenReady().then(() => {
   createWindow()
   loadBlobs()
   startBlobServer()
-  // X11 + Windows only; on Wayland bind Ctrl+Insert to the app command in system settings (relaunch toggles).
-  globalShortcut.register('Control+Insert', toggle)
+  // The desktop changed theme or font: repaint in the new colours, no restart.
+  omarchy.watch(t => {
+    if (!win || win.isDestroyed()) return
+    if (t && t.colors.background) win.setBackgroundColor(t.colors.background)
+    win.webContents.send('omarchy:theme', t)
+  })
+  // X11 + Windows only; on Wayland bind Ctrl+Insert to `tsdrop` in the compositor (relaunch toggles).
+  if (!WAYLAND) globalShortcut.register('Control+Insert', toggle)
   try {
     tray = new Tray(nativeImage.createFromPath(path.join(__dirname, 'tray.png')))
-    tray.setToolTip('TSDROP  ·  Ctrl+Insert')
+    // on Wayland the chord is the compositor's, and it is not ours to name
+    tray.setToolTip(WAYLAND ? 'TSDROP' : 'TSDROP  ·  Ctrl+Insert')
     tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Show / hide  (Ctrl+Insert)', click: toggle },
+      { label: WAYLAND ? 'Show / hide' : 'Show / hide  (Ctrl+Insert)', click: toggle },
       { type: 'separator' },
       { label: 'Quit', click: () => { app.quitting = true; app.quit() } },
     ]))
@@ -167,14 +211,24 @@ app.on('will-quit', () => globalShortcut.unregisterAll())
 app.on('window-all-closed', () => {})
 
 // ---- WebDAV over Node http: no CORS, no size limit ----
-ipcMain.handle('dav:req', (_e, { method, url, headers, body }) => new Promise((res, rej) => {
+ipcMain.handle('dav:req', (_e, { method, url, headers, body, timeout }) => new Promise((res, rej) => {
   const b = body == null ? null : Buffer.from(typeof body === 'string' ? body : body.buffer, ...(typeof body === 'string' ? [] : [body.byteOffset, body.byteLength]))
-  const r = lib(url).request(url, { method, headers: b ? { ...headers, 'Content-Length': b.length } : headers }, resp => {
+  /* Listings and JSON compress ~10x and the server gzips them when asked. Node does not ask
+     by itself (a browser and Android's OkHttp do), so ask here and unpack the reply. File
+     transfers go through dav:upload / dav:download and are left alone - media is compressed. */
+  const h = { 'Accept-Encoding': 'gzip', ...headers, ...(b ? { 'Content-Length': b.length } : {}) }
+  const r = lib(url).request(url, { method, headers: h }, resp => {
     const c = []
-    resp.on('data', d => c.push(d))
-    resp.on('end', () => res({ status: resp.statusCode, text: Buffer.concat(c).toString('utf8') }))
+    const gz = /gzip/i.test(resp.headers['content-encoding'] || '')
+    const src = gz ? resp.pipe(zlib.createGunzip()) : resp
+    src.on('data', d => c.push(d))
+    src.on('end', () => res({ status: resp.statusCode, text: Buffer.concat(c).toString('utf8') }))
+    src.on('error', e => rej(new Error(e.message)))
   })
   r.on('error', e => rej(new Error(e.message)))
+  // A server that is switched off does not refuse, it just never answers; without this a
+  // probe waits out the OS's TCP timeout (minutes) before the next endpoint gets a turn.
+  if (timeout) r.setTimeout(timeout, () => r.destroy(new Error('timed out')))
   if (b) r.write(b)
   r.end()
 }))
@@ -209,8 +263,8 @@ ipcMain.handle('dav:download', async (_e, o) => {
   return r.canceled || !r.filePath ? null : fetchTo(o, r.filePath)
 })
 
-const fetchTo = ({ id, url, headers, name, key }, pick) => new Promise((res, rej) => {
-  const dir = downloadDir()
+const fetchTo = ({ id, url, headers, name, key, dir: into }, pick) => new Promise((res, rej) => {
+  const dir = into && isDir(into) ? into : downloadDir()
   let out = pick || path.join(dir, name)
   let n = 1
   while (!pick && fs.existsSync(out)) { const x = path.parse(name); out = path.join(dir, `${x.name} (${n++})${x.ext}`) }
@@ -251,6 +305,8 @@ ipcMain.handle('dav:bytes', (_e, { url, headers }) => new Promise(res => {
 }))
 
 ipcMain.handle('read', (_e, p) => fs.promises.readFile(p).catch(() => null))
+
+ipcMain.handle('omarchy:theme', () => omarchy.theme())
 
 ipcMain.handle('og', (_e, url) => fetchHead(url))
 ipcMain.handle('copy', (_e, t) => clipboard.writeText(String(t)))
@@ -323,10 +379,20 @@ ipcMain.handle('serve', (_e, f) => {
 ipcMain.handle('unserve', (_e, token) => { blobs.delete(token); saveBlobs() })
 
 ipcMain.handle('paste', () => {
+  /* Wayland hands the clipboard over lazily: until the formats have been asked
+     for, read() answers an empty string for a list of files that is plainly
+     there. Asking is what fills Electron's copy of it. Cheap, and a no-op on
+     Windows and X11. */
+  const formats = clipboard.availableFormats()
+
   // a copied FILE keeps its original bytes - no re-encode, EXIF intact
   const paths = []
   try {
-    const uris = clipboard.read('text/uri-list')
+    // GNOME Files, which is Omarchy's, writes its own format: "copy\n<uri>\n<uri>"
+    const uris = clipboard.read('text/uri-list') ||
+      (formats.includes('x-special/gnome-copied-files')
+        ? clipboard.read('x-special/gnome-copied-files').replace(/^(copy|cut)\r?\n/, '')
+        : '')
     for (const line of String(uris || '').split(/\r?\n/)) {
       if (!line.startsWith('file://')) continue
       const p = decodeURIComponent(new URL(line).pathname)
@@ -352,24 +418,19 @@ ipcMain.handle('paste', () => {
 })
 
 ipcMain.handle('stat', (_e, p) => { try { const s = fs.statSync(p); return { name: path.basename(p), size: s.size, path: p } } catch (e) { return null } })
-/* The file manager is a column to the LEFT, so the window grows leftwards: the right edge
-   stays put and the chat panes never move under the cursor. */
-ipcMain.handle('grow', (_e, px) => {
-  if (!win || win.isDestroyed()) return 0
-  const want = (Math.round(px) || 0) > 0 ? lastGrow : 0
-  const b = win.getBounds()
-  const base = b.width - grown
-  const wa = screen.getDisplayNearestPoint({ x: b.x + Math.round(b.width / 2), y: b.y }).workArea
-  const w = Math.max(base, Math.min(base + want, wa.width - 12))
-  grown = w - base
-  lastW = w                     // the resize this triggers is ours, not the user dragging
-  const right = b.x + b.width
-  win.setBounds({ x: Math.max(wa.x + 6, Math.min(right - w, wa.x + wa.width - w - 6)), y: b.y, width: w, height: b.height })
-  return grown
-})
 ipcMain.handle('hide', () => win && win.hide())
 ipcMain.handle('reveal', (_e, p) => shell.showItemInFolder(p))
 ipcMain.handle('openPath', (_e, p) => shell.openPath(p))
+
+/* Reading a QR off a screenshot. Chromium has a decoder (BarcodeDetector) but not on
+   linux, so the vault's import falls back here. zbar is a two-second pacman install and
+   nothing else in the app needs it, so it stays optional and says so when it is absent. */
+ipcMain.handle('qr', (_e, p) => new Promise(res => {
+  execFile('zbarimg', ['-q', '--raw', p], { maxBuffer: 4e6 }, (err, stdout) => {
+    if (err && err.code === 'ENOENT') return res({ err: 'no QR reader here — install zbar (sudo pacman -S zbar), or paste the otpauth:// link instead' })
+    res({ text: String(stdout || '').trim() })
+  })
+}))
 
 ipcMain.handle('tailscale', () => new Promise(res => {
   execFile('tailscale', ['status', '--json'], { maxBuffer: 16e6 }, (err, stdout) => {

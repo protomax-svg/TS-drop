@@ -5,6 +5,8 @@ import { copyImage } from './bridge'
 import { decryptBytes } from './crypto'
 import { kindOf, fmtSize, hasThumb, thumbPath, isMedia } from './store'
 import Menu from './Menu.jsx'
+import Icon from './Icon.jsx'
+import { iconOfName } from './ui.jsx'
 import { isTable } from './Sheet.jsx'
 import { gate, PRI } from './queue'
 
@@ -82,14 +84,19 @@ function useBlob (f, key, want, pri, onBytes) {
   }]
 }
 
-const Row = ({ f, onSave, extra }) => (
+/* A file as a row. Its main action is the obvious one: a spreadsheet opens (that was hidden
+   behind a small grid button before, and a click on the row saved it instead), anything else
+   saves. A spreadsheet keeps a separate save button. */
+const Row = ({ f, onSave, onOpen, extra }) => (
   <div className="frow">
     {extra}
-    <button className="file hud rev" onClick={() => onSave(f)}>
-      <span className="ico">▼</span>
+    <button className="file hud" onClick={() => (onOpen ? onOpen(f) : onSave(f))} title={onOpen ? 'Open' : 'Save'}>
+      <span className="ico"><Icon n={iconOfName(f.name, kindOf(f.name))} size={18} /></span>
       <span className="fn">{f.name}</span>
-      <span className="fs">{fmtSize(f.size)}{f.src ? ' ⇄' : ''}</span>
+      <span className="fs">{f.src && <Icon n="direct" size={12} title="Direct from the other device" />}{fmtSize(f.size)}</span>
+      {onOpen ? <Icon n="chevR" size={14} /> : <Icon n="download" size={14} />}
     </button>
+    {onOpen && <button className="btn" title="Save a copy" aria-label="Save a copy" onClick={() => onSave(f)}><Icon n="download" size={15} /></button>}
   </div>
 )
 
@@ -125,24 +132,24 @@ export function Lightbox ({ list, i, setI, chatKey, close, onSave, onFull }) {
 
   return createPortal((
     <div className="lbox" onWheel={wheel} onPointerDown={e => e.target === e.currentTarget && close()}>
-      {!url && !err && <div className="ph">loading…</div>}
+      {!url && !err && <div className="ph">Loading…</div>}
       {err && <button className="ph err" onClick={retry}>{err} · tap to retry</button>}
       {url && (kind === 'video'
         ? <video src={url} controls autoPlay playsInline onContextMenu={ctx} />
         : <img src={url} alt={f.name} decoding="async" onContextMenu={ctx} />)}
-      {list.length > 1 && <button className="lnav p" onClick={() => go(-1)} title="previous · ←">‹</button>}
-      {list.length > 1 && <button className="lnav n" onClick={() => go(1)} title="next · →">›</button>}
-      <div className="lcap">{f.name}{list.length > 1 ? ` · ${i + 1}/${list.length}` : ''}</div>
-      <button className="lx" onClick={close} title="close · Esc">×</button>
+      {list.length > 1 && <button className="lnav p" onClick={() => go(-1)} title="Previous" aria-label="Previous"><Icon n="chevL" size={20} /></button>}
+      {list.length > 1 && <button className="lnav n" onClick={() => go(1)} title="Next" aria-label="Next"><Icon n="chevR" size={20} /></button>}
+      <div className="lcap">{f.name}{list.length > 1 ? ` · ${i + 1} of ${list.length}` : ''}</div>
+      <button className="lx" onClick={close} title="Close · Esc" aria-label="Close"><Icon n="x" size={18} /></button>
       {menu && <Menu at={menu} items={[
-        ['save as…', () => onSave(f)],
-        url && kind === 'image' && ['copy image', () => copyImage(url)],
+        ['Save as…', () => onSave(f), false, 'download'],
+        url && kind === 'image' && ['Copy image', () => copyImage(url), false, 'copy'],
       ].filter(Boolean)} close={() => setMenu(null)} />}
     </div>
   ), document.body)
 }
 
-export default function Attachment ({ f, chatKey, onSave, onZoom, onFull, onSheet }) {
+export default function Attachment ({ f, chatKey, onSave, onZoom, onFull, onSheet, tile: asTile }) {
   const kind = kindOf(f.name)
   const small = hasThumb(f)
   // a tile pulls the 512px sibling when there is one, and only then the original
@@ -177,8 +184,8 @@ export default function Attachment ({ f, chatKey, onSave, onZoom, onFull, onShee
   const save = () => { setMenu(null); onSave(f) }
   const copy = () => { setMenu(null); copyImage(url) }
   const mine = menu && <Menu at={menu} items={[
-    ['save as…', save],
-    url && kind === 'image' && ['copy image', copy],
+    ['Save as…', save, false, 'download'],
+    url && kind === 'image' && ['Copy image', copy, false, 'copy'],
   ].filter(Boolean)} close={() => setMenu(null)} />
   // a tile that renders as a black box has a dead URL: fetch it once more, then give up
   const heal = () => { if (!broke) { setBroke(true); retry() } }
@@ -192,28 +199,32 @@ export default function Attachment ({ f, chatKey, onSave, onZoom, onFull, onShee
     return (
       <div className="att hud vtile" ref={box} style={shape} onClick={() => onZoom(f)} onContextMenu={ctx}>
         {url && <img src={url} alt={f.name} decoding="async" onError={heal} />}
-        <span className="vplay">▶</span>
+        <span className="vplay"><Icon n="play" size={18} fill /></span>
         <div className="cap">{f.name} · {fmtSize(f.size)}</div>
         {mine}
       </div>
     )
   }
   const table = !!(onSheet && f.path && isTable(f.name))
+  /* gallery tile for an original too big to preview unasked: a square that says so */
+  if (asTile && !inlineOk && !force) return (
+    <button className="att hud gtile" ref={box} onClick={() => setForce(true)} title="Load preview">
+      <Icon n={iconOfName(f.name, kind)} size={22} /><span>{fmtSize(f.size)}</span>
+    </button>
+  )
   if (!inlineOk && !force) return (
-    <Row f={f} onSave={onSave} extra={table
-      ? <button className="btn hud" onClick={() => onSheet(f)} title="open as a table">▦</button>
-      : isMedia(f.name)
-        ? <button className="btn hud" onClick={() => setForce(true)} title="load preview once">◻</button>
-        : null} />
+    <Row f={f} onSave={onSave} onOpen={table ? onSheet : null} extra={!table && isMedia(f.name)
+      ? <button className="btn" onClick={() => setForce(true)} title="Load a preview once" aria-label="Load preview"><Icon n="eye" size={15} /></button>
+      : null} />
   )
 
   return (
     <div className="att hud" ref={box} style={shape}>
-      {!url && !err && <div className="ph">{want ? 'loading…' : fmtSize(f.size)}</div>}
+      {!url && !err && <div className="ph">{want ? 'Loading…' : fmtSize(f.size)}</div>}
       {err && <button className="ph err" onClick={retry}>{err} · tap to retry</button>}
       {url && kind === 'image' && <img className="zin" src={url} alt={f.name} decoding="async" onError={heal} onClick={() => onZoom(f)} onContextMenu={ctx} />}
       {url && kind === 'audio' && <audio src={url} controls onContextMenu={ctx} />}
-      <div className="cap" title="right click to save">{f.name} · {fmtSize(f.size)}{f.src ? ' ⇄ ' + (f.src.dev || 'direct') : ''}</div>
+      <div className="cap" title="Right-click or long-press to save">{f.name} · {fmtSize(f.size)}{f.src ? ' · direct from ' + (f.src.dev || 'another device') : ''}</div>
       {mine}
     </div>
   )

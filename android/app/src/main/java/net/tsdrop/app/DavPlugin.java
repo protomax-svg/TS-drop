@@ -439,6 +439,46 @@ public class DavPlugin extends Plugin {
     }
 
     /** Register a local file for direct pickup and say where to get it. */
+    /** OS share sheet. paths are exactly what download() handed back: content:// or absolute. */
+    @PluginMethod
+    public void share(PluginCall call) {
+        String text = call.getString("text", "");
+        JSArray arr = call.getArray("paths", new JSArray());
+        try {
+            java.util.ArrayList<Uri> uris = new java.util.ArrayList<>();
+            String mime = null;
+            for (Object o : arr.toList()) {
+                String p = String.valueOf(o);
+                if (p.startsWith("content://")) uris.add(Uri.parse(p));
+                else uris.add(androidx.core.content.FileProvider.getUriForFile(
+                        getContext(), getContext().getPackageName() + ".fileprovider",
+                        new File(p.startsWith("file://") ? Uri.parse(p).getPath() : p)));
+                Uri u = uris.get(uris.size() - 1);
+                // a content:// uri carries no extension, so the resolver is the only source of a type
+                String m = "content".equals(u.getScheme()) ? getContext().getContentResolver().getType(u) : mimeOf(p);
+                if (m == null) m = "*/*";
+                mime = mime == null || mime.equals(m) ? m : "*/*";
+            }
+            Intent i;
+            if (uris.isEmpty()) {
+                i = new Intent(Intent.ACTION_SEND).setType("text/plain");
+            } else if (uris.size() == 1) {
+                i = new Intent(Intent.ACTION_SEND).setType(mime == null ? "*/*" : mime);
+                i.putExtra(Intent.EXTRA_STREAM, uris.get(0));
+                i.setClipData(ClipData.newRawUri("", uris.get(0)));
+            } else {
+                i = new Intent(Intent.ACTION_SEND_MULTIPLE).setType(mime == null ? "*/*" : mime);
+                i.putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris);
+            }
+            if (!text.isEmpty()) i.putExtra(Intent.EXTRA_TEXT, text);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            Intent chooser = Intent.createChooser(i, "share")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            getContext().startActivity(chooser);
+            call.resolve();
+        } catch (Exception e) { call.reject(msg(e)); }
+    }
+
     @PluginMethod
     public void serve(PluginCall call) {
         String path = call.getString("path");
@@ -489,8 +529,16 @@ public class DavPlugin extends Plugin {
         applyHeaders(b, headers);
 
         final Request req = b.build();
+        // Probes (finding a server that answers) pass a timeout; transfers never do.
+        final int timeout = call.getInt("timeout", 0);
+        final OkHttpClient c = timeout > 0
+            ? client.newBuilder()
+                .connectTimeout(timeout, TimeUnit.MILLISECONDS)
+                .callTimeout(timeout, TimeUnit.MILLISECONDS)
+                .build()
+            : client;
         new Thread(() -> {
-            try (Response r = client.newCall(req).execute()) {
+            try (Response r = c.newCall(req).execute()) {
                 JSObject out = new JSObject();
                 out.put("status", r.code());
                 out.put("data", r.body() == null ? "" : r.body().string());

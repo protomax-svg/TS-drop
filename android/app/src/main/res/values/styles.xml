@@ -9,11 +9,20 @@
         <item name="colorAccent">@color/colorAccent</item>
     </style>
 
-    <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- The theme the activity runs in (Capacitor switches to it after the splash).
+         No android:background here: a theme-level background is applied to every view,
+         including the floating copy/paste toolbar text selection brings up, which then
+         drew as a solid dark box hiding its own (dark) labels. Only the window gets the
+         colour. Dark AppCompat parent, so that toolbar is dark with light text whatever
+         the phone's own day/night setting is. -->
+    <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.NoActionBar">
         <item name="windowActionBar">false</item>
         <item name="windowNoTitle">true</item>
-        <item name="android:background">@color/colorPrimaryDark</item>
         <item name="android:windowBackground">@color/colorPrimaryDark</item>
+        <item name="colorPrimary">@color/colorPrimary</item>
+        <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
+        <item name="colorAccent">@color/colorAccent</item>
+        <item name="android:textColorHighlight">#5c6670</item>
     </style>
 
 

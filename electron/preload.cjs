@@ -18,7 +18,6 @@ contextBridge.exposeInMainWorld('tsdrop', {
   unserve: t => ipcRenderer.invoke('unserve', t),
   stat: p => ipcRenderer.invoke('stat', p),
   hide: () => ipcRenderer.invoke('hide'),
-  grow: px => ipcRenderer.invoke('grow', px),
   reveal: p => ipcRenderer.invoke('reveal', p),
   openPath: p => ipcRenderer.invoke('openPath', p),
   getDownloadDir: () => ipcRenderer.invoke('getDownloadDir'),
@@ -26,6 +25,10 @@ contextBridge.exposeInMainWorld('tsdrop', {
   pickDir: () => ipcRenderer.invoke('pickDir'),
   listDir: o => ipcRenderer.invoke('listDir', o),
   tailscale: () => ipcRenderer.invoke('tailscale'),
+  qr: p => ipcRenderer.invoke('qr', p),
   pathOf: f => { try { return webUtils.getPathForFile(f) } catch (e) { return null } },
   onProgress: cb => ipcRenderer.on('progress', (_e, d) => cb(d)),
+  // the desktop's current theme (Omarchy), and every change to it
+  desktopTheme: () => ipcRenderer.invoke('omarchy:theme'),
+  onDesktopTheme: cb => ipcRenderer.on('omarchy:theme', (_e, t) => cb(t)),
 })

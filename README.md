@@ -22,7 +22,8 @@ nothing.
   (main path, files at rest)       (fast path, bytes never stored)
 ```
 
-Runs on Windows 10/11, Linux (Electron) and Android (Capacitor).
+Runs on Windows 10/11, Linux (Electron — including Omarchy, where it wears the desktop's
+own theme) and Android (Capacitor).
 
 ---
 
@@ -43,13 +44,23 @@ See [Tailscale](#tailscale) below.
 
 ## Install
 
-**Linux (Kubuntu)** — pick one:
+**Linux (Kubuntu, Debian)** — pick one:
 
 ```bash
 sudo dpkg -i release/TSDROP-<version>-amd64.deb        # installs as `tsdrop`
 # or
 chmod +x release/TSDROP-<version>-x86_64.AppImage && ./release/TSDROP-<version>-x86_64.AppImage
 ```
+
+**Linux (Arch, Omarchy)**:
+
+```bash
+sudo pacman -U release/TSDROP-<version>-x64.pacman     # installs as `tsdrop`
+./omarchy/install.sh                                   # window rules + Super+Insert
+```
+
+The AppImage wants `fuse2`, which Arch does not install by default, so the package is the
+easier path. [Omarchy](#omarchy) below is the rest of it.
 
 **Windows 10 / 11** — run `release/TSDROP-Setup-<version>.exe`.
 No admin rights needed, it installs per user. `release/TSDROP-portable-<version>.exe` needs no install at all.
@@ -68,8 +79,9 @@ It opens **on the tray icon**, not in the middle of the screen:
 
 * **Windows 10 / 11** — right above the tray icon in the taskbar. Correct on any taskbar edge.
 * **Linux / X11** — same.
-* **Linux / Wayland** — the compositor decides where windows go, so the app cannot place itself.
-  KDE will put it where it likes. Nothing to fix on our side.
+* **Linux / Wayland** — the compositor decides where windows go, so the app cannot place itself,
+  and does not try. KDE will put it where it likes. On Hyprland a window rule does the placing
+  instead — see [Omarchy](#omarchy).
 
 Its size is remembered.
 
@@ -79,12 +91,60 @@ Click the tray icon, or press **Ctrl+Insert**, to show and hide it.
 
 Works out of the box on Windows and Linux/X11.
 
-**KDE on Wayland blocks global hotkeys for apps.** The `.deb` ships the shortcut in its
-desktop entry, so it should just work. If it does not:
+**Wayland hands hotkeys to the compositor, not to apps.** On Hyprland the binding lives in
+Hyprland's config — `./omarchy/install.sh` puts it there as **Super+Insert**, see
+[Omarchy](#omarchy). On KDE the `.deb` ships the shortcut in its desktop entry, so it should
+just work. If it does not:
 
 > System Settings -> Keyboard -> Shortcuts -> Add Command -> `tsdrop` -> assign `Ctrl+Ins`
 
 Launching `tsdrop` while it is already running toggles the window. That is what the shortcut uses.
+
+---
+
+## Omarchy
+
+[Omarchy](https://omarchy.org) is Arch with Hyprland, and both halves of that change what the
+app is allowed to do for itself. Two things to install, one of which is a one-liner.
+
+**The package.** `npm run dist:arch` builds `release/TSDROP-<version>-x64.pacman`; `sudo pacman -U`
+it. The build uses the Electron that Arch already installed (`electron43`) when the major
+matches, so it does not pull 110 MB of the same runtime down again.
+
+**The window.** Wayland does not let a window place itself, so without a rule the popup opens
+as a tile, full height, wherever the layout puts it. The rule lives in Hyprland's config:
+
+```bash
+./omarchy/install.sh            # --remove takes it out again
+```
+
+That writes `~/.config/hypr/tsdrop.lua` and adds one `require` line to
+`~/.config/hypr/hyprland.lua`, backing up whatever it touches. TSDROP then floats in the bottom
+right corner, at the size it remembers, and fades with every other Omarchy window because the
+rule leaves opacity alone.
+
+**The key is Super+Insert**, not Ctrl+Insert: Omarchy sends Ctrl+Insert to terminals as copy
+(it is what Super+C does there), and terminals have meant it as copy for far longer than that.
+Change the chord in `~/.config/hypr/tsdrop.lua` if it is in your way. Either way it works the
+same as everywhere else — launching `tsdrop` while it runs shows or hides the window.
+
+`×` still hides to the tray; Omarchy's bar has one, behind the `<` on the right.
+
+For TSDROP to be there from login rather than on first launch, put
+`o.launch_on_start("tsdrop")` in `~/.config/hypr/autostart.lua`.
+
+**The theme.** TSDROP wears whatever the desktop is wearing. `omarchy theme set <name>`
+repaints the app as it repaints the terminal and the bar, with no restart and nothing to
+configure:
+
+* colours come from `~/.local/state/omarchy/current/theme/colors.toml`, the same file the
+  rest of the desktop is themed from
+* the monospace font is whatever `fc-match monospace` answers, which is what `omarchy font set`
+  changes
+* both are watched, so a theme change lands in the window as it happens
+
+`⚙` → `theme` switches between `auto ◆ <theme>` and the app's own `dark ◑` / `light ◐`, for
+when you want TSDROP to stay put while the desktop changes.
 
 ---
 
@@ -307,6 +367,60 @@ in local storage instead. `EDIT` on the chat has **lock now / forget key**.
 
 ---
 
+## Authenticator — your 2FA codes
+
+The **◈** button in the top strip (also **◈ AUTHENTICATOR** at the bottom of the container
+list) is a replacement for Google Authenticator that lives in your own cloud.
+
+It has a password of its own. Not the Nextcloud one, not a container one — one more
+password, on purpose, so that reaching the server, or reading a backup of it, is still not
+enough to get a code.
+
+Everything is in one file, `vault/vault.json` on the server:
+
+```
+{ v, salt, it, check, rev, ts, d }      d = AES-256-GCM( { entries: [...] } )
+```
+
+* key: PBKDF2-SHA256, **600 000** rounds (chats use 250 000) from the password and a random salt
+* the blob holds the secrets *and* the account names — the server sees neither, only noise
+* the key is in memory only, never local storage, never disk
+* it is forgotten **5 minutes** after you last touch the vault, even with the pane closed,
+  and by **LOCK**, and by closing the app
+* codes are computed on the device; nothing is ever asked of the network to show one
+
+Adding codes, in order of how little typing they need:
+
+1. **Google Authenticator → ⋯ → Transfer accounts → Export.** That one QR holds every
+   account. Screenshot it (or photograph the phone from the desktop) and feed the picture to
+   **+ CODE → QR from image / QR from clipboard**. The whole list imports in one go.
+2. Paste an `otpauth://totp/…` link — what a site's "can't scan the QR?" link gives you.
+3. **type it in** — the base32 secret a site prints beside its QR.
+
+Re-importing the same export twice is safe: an account already in the vault is skipped, not
+duplicated.
+
+Tap a code to copy it. Right-click (long-press) a row for rename, delete, and **copy otpauth
+link** — that last one puts a plain secret on the clipboard, so it asks first; it is there
+for moving an account to another app or to paper.
+
+Both standards are implemented, against their own published test vectors:
+TOTP (RFC 6238) and HOTP (RFC 4226), SHA1/SHA256/SHA512, 6–8 digits, 30s or 60s.
+`node src/totp.test.mjs` runs all 28 of them.
+
+Two devices can add codes at the same time without either losing one: every write re-reads
+the file and merges by entry id, and a delete leaves a tombstone behind so it cannot come
+back from the other phone. `node src/vault.test.mjs` plays that out, including a rekey.
+
+**No recovery.** Lose the vault password and the codes are gone. Keep the one-time backup
+codes your accounts handed you somewhere that is not this app — a vault that is your only
+way in is a single point of failure, whoever wrote it.
+
+QR reading uses the browser's own decoder on Android. Chromium has none on Linux, so the
+desktop shells out to **zbar** (`sudo pacman -S zbar`); without it, paste the link instead.
+
+---
+
 ## Develop
 
 ```bash
@@ -314,6 +428,10 @@ cp .env.example .env   # put your own tailnet addresses in it
 npm install
 npm start              # vite + electron with hot reload
 ```
+
+Keep the checkout on a local disk. On a CIFS/SMB share `npm install` cannot create the symlinks
+in `node_modules/.bin`, and an Electron binary started from one comes up without ever opening a
+window.
 
 The selftest runs end to end against your live Nextcloud, so it needs credentials:
 
@@ -325,7 +443,8 @@ DAV_USER=<user> DAV_PASS=<app-password> npm run selftest
 Build:
 
 ```bash
-npm run dist:linux                        # AppImage + deb
+npm run dist:linux                        # AppImage + deb + pacman
+npm run dist:arch                         # pacman only, on the system electron
 npm run dist:win                          # installer + portable exe (needs wine on Linux)
 cd android && ./gradlew assembleRelease   # signed apk
 ```
@@ -335,8 +454,17 @@ Everything lands in `release/`, except the apk (`android/app/build/outputs/apk/r
 Android needs JDK 21 and the Android SDK:
 
 ```bash
-export JAVA_HOME=$HOME/.jdks/jdk-21.0.12.1+1
+mise install java@temurin-21          # or any other JDK 21
+export JAVA_HOME=$HOME/.local/share/mise/installs/java/temurin-21
 export ANDROID_HOME=$HOME/Android/Sdk
+```
+
+The SDK itself, if the machine has none, is Google's command line tools unpacked into
+`$ANDROID_HOME/cmdline-tools/latest`, then:
+
+```bash
+yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager platform-tools "platforms;android-36" "build-tools;36.0.0"
 ```
 
 ---
@@ -350,15 +478,23 @@ export ANDROID_HOME=$HOME/Android/Sdk
 | `src/dav.js` | WebDAV calls + endpoint detection |
 | `src/bridge.js` | one API over Electron / Android / browser |
 | `electron/main.cjs` | window, tray, Ctrl+Insert, streamed transfers |
+| `electron/omarchy.cjs` | reads the desktop's theme and font, and watches both |
+| `src/omarchy.js` | that palette mapped onto the HUD's variables |
+| `omarchy/tsdrop.lua` | the Hyprland window rule and key binding |
 | `android/app/src/main/java/net/tsdrop/app/DavPlugin.java` | all Android HTTP: WebDAV, streamed transfers, AES-GCM |
 | `src/crypto.js` | AES-GCM + PBKDF2 in the UI |
+| `src/totp.js` | TOTP/HOTP, otpauth links, the Google Authenticator export format |
+| `src/vault.js` | the authenticator vault: one encrypted file, merges, auto-lock |
+| `src/Vault.jsx` | its pane — codes, import, rename, password change |
 | `src/Media.jsx` | inline images, video, audio |
 | `electron/gcm.cjs` | the same crypto as a Node stream |
 | `selftest.mjs` | the check, including crypto interop |
+| `src/totp.test.mjs` | the RFC vectors (`npm test`) |
+| `src/vault.test.mjs` | the vault against a fake server (`npm test`) |
 
 No credentials are in this repo. The Nextcloud app password is typed on first run and kept in
 local storage on that device; your tailnet addresses come from `.env`, which is gitignored.
 
 Anyone who can reach your tailnet *and* has the app password can read the shared chats — that
-is the point, they are your own devices. Private chats are the exception: those need their own
-password on top, and the server only ever sees noise.
+is the point, they are your own devices. Private chats and the authenticator vault are the
+exception: those need their own password on top, and the server only ever sees noise.

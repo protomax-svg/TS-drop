@@ -4,6 +4,7 @@ import * as dav from './dav'
 import * as C from './crypto'
 import { putBytes } from './bridge'
 import { parseCsv, toCsv, sepOf } from './csv'
+import Icon from './Icon.jsx'
 
 export const isTable = n => /\.(xlsx|xlsm|csv|tsv)$/i.test(n || '')
 const isCsv = n => /\.(csv|tsv)$/i.test(n)
@@ -22,6 +23,14 @@ export const colName = n => {
 }
 
 const cell = (v = '', bg = '', fg = '') => ({ v, bg, fg })
+/* A fill from the file with no text colour of its own: pick dark or light text by the fill's
+   brightness, or the theme's text colour lands on a pale cell and vanishes. */
+const inkOn = bg => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(bg || '')
+  if (!m) return undefined
+  const [r, g, b] = [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16) / 255)
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.45 ? '#1d1b19' : '#f5f3f0'
+}
 /** Grow a parsed grid into a rectangle with room to spare. */
 const pad = g => {
   const cols = Math.min(MAXC, Math.max(MINC, ...g.map(r => r.length)) + PADC)
@@ -69,7 +78,7 @@ export default function Sheet ({ f, chatKey, say, onClose, onSaved, float }) {
   const [at, setAt] = useState(0)
   const [sel, setSel] = useState(null)
   const [err, setErr] = useState(null)
-  const [busy, setBusy] = useState('opening…')
+  const [busy, setBusy] = useState('Opening…')
   const [dirty, setDirty] = useState(false)
   const [hue, setHue] = useState('#ffe08a')      // last fill colour picked
   const [ink, setInk] = useState('#f87171')      // last text colour picked
@@ -79,7 +88,7 @@ export default function Sheet ({ f, chatKey, say, onClose, onSaved, float }) {
 
   useEffect(() => {
     let live = true
-    setGrid(null); setErr(null); setSel(null); setDirty(false); setBusy('opening…')
+    setGrid(null); setErr(null); setSel(null); setDirty(false); setBusy('Opening…')
     edits.current = new Set()
     opened.current = chatKey
     ;(async () => {
@@ -97,6 +106,9 @@ export default function Sheet ({ f, chatKey, say, onClose, onSaved, float }) {
           const book = new ExcelJS.Workbook()
           await book.xlsx.load(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
           if (!book.worksheets.length) throw new Error('no sheets in this file')
+          // some xlsx files carry a Table with no <tableStyleInfo/>, which exceljs parses as
+          // style: null and then crashes writing it back out ("reading 'theme'") - give it one
+          for (const w of book.worksheets) for (const t of w.getTables()) if (!t.model.style) t.model.style = {}
           wb.current = book
           if (live) { setTabs(book.worksheets.map(w => w.name)); setAt(0); setGrid(readSheet(book.worksheets[0])) }
         }
@@ -146,7 +158,7 @@ export default function Sheet ({ f, chatKey, say, onClose, onSaved, float }) {
 
   const save = async () => {
     if (chatKey !== opened.current) { say('the key changed, this file can no longer be saved', true); return }
-    setBusy('saving…')
+    setBusy('Saving…')
     try {
       let out
       if (wb.current) { apply(); out = new Uint8Array(await wb.current.xlsx.writeBuffer()) }
@@ -193,28 +205,28 @@ export default function Sheet ({ f, chatKey, say, onClose, onSaved, float }) {
   const pane = (
     <div className={'fmsheet hud' + (float ? ' float' : '')}>
       <div className="fmbar">
-        <span className="lab grow">{f.name}{dirty ? ' •' : ''}</span>
+        <span className="lab grow"><Icon n="table" size={16} />{f.name}{dirty && <span className="tag-n">unsaved</span>}</span>
         {tabs.length > 1 && tabs.map((t, i) => (
           <button key={t} className={'fmcr' + (i === at ? ' on' : '')} onClick={() => pickSheet(i)}>{t}</button>
         ))}
-        {csv && <span className="shnote" title="a csv file stores text only">no colours in csv</span>}
+        {csv && <span className="shnote" title="A CSV file stores text only">CSV keeps no colours</span>}
         <input className="shpick" type="color" disabled={!some} value={hue}
           title={csv ? 'csv keeps no colours, they are lost on save' : 'fill colour of the selected cells'}
           onChange={e => { setHue(e.target.value); write(selected(), { bg: e.target.value }) }} />
         <input className="shpick ink" type="color" disabled={!some} value={ink}
           title={csv ? 'csv keeps no colours, they are lost on save' : 'text colour of the selected cells'}
           onChange={e => { setInk(e.target.value); write(selected(), { fg: e.target.value }) }} />
-        <button className="btn hud" disabled={!some} title="no colour" onClick={() => write(selected(), { bg: '', fg: '' })}>◻</button>
-        <button className="btn hud" disabled={!some} title="empty the selected cells" onClick={() => write(selected(), { v: '', bg: '', fg: '' })}>clear</button>
-        <button className="btn hud p" disabled={!!busy || !dirty} onClick={save}>{busy || 'save'}</button>
-        <button className="icobtn hud x" title="close" onClick={onClose}>×</button>
+        <button className="btn sm" disabled={!some} title="Remove the colours of the selected cells" onClick={() => write(selected(), { bg: '', fg: '' })}>No colour</button>
+        <button className="btn sm" disabled={!some} title="Empty the selected cells" onClick={() => write(selected(), { v: '', bg: '', fg: '' })}>Clear</button>
+        <button className="btn sm p" disabled={!!busy || !dirty} onClick={save}>{busy || 'Save'}</button>
+        <button className="icobtn" title="Close" aria-label="Close" onClick={onClose}><Icon n="x" size={16} /></button>
       </div>
 
       {err && <div className="empty">{err}</div>}
-      {!err && !grid && <div className="empty">{busy || 'loading…'}</div>}
+      {!err && !grid && <div className="empty">{busy || 'Loading…'}</div>}
       {grid && (
         <div className="shwrap">
-          <table className="sheet">
+          <table className="grid">
             <thead>
               <tr>
                 <th className="shh pick" title="select everything" onClick={takeAll} />
@@ -231,7 +243,7 @@ export default function Sheet ({ f, chatKey, say, onClose, onSaved, float }) {
                     onClick={e => takeRow(r, e)}>{r + 1}</th>
                   {row.map((x, c) => (
                     <td key={c} className={'shx' + (inBox(sel, r, c) ? ' on' : '')}
-                      style={x.bg || x.fg ? { background: x.bg || undefined, color: x.fg || undefined } : null}
+                      style={x.bg || x.fg ? { background: x.bg || undefined, color: x.fg || inkOn(x.bg) } : null}
                       contentEditable suppressContentEditableWarning spellCheck={false}
                       onMouseDown={e => {
                         if (!e.shiftKey) { setSel({ r1: r, c1: c, r2: r, c2: c }); return }

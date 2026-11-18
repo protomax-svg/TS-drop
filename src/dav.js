@@ -19,7 +19,13 @@ export const saveCfg = c => localStorage.setItem('tsdrop.cfg', JSON.stringify(c)
 let cfg = loadCfg()
 export const setCfg = c => { cfg = c; saveCfg(c) }
 export const getCfg = () => cfg
-export const candidates = () => [...cfg.extra, ...(cfg.base ? [cfg.base] : []), ...BUILTIN_ENDPOINTS].filter((v, i, a) => v && a.indexOf(v) === i)
+/* Built-ins come before the remembered one. cfg.base is only "the last server that
+   answered"; when the built-in list moves (Nextcloud on the laptop -> Proxmox, with the
+   laptop as the fallback), a remembered old server that still answers would otherwise keep
+   winning forever. A server tested by hand in Setup becomes cfg.base and is used for the
+   rest of that run; the next start goes back to the built-in order. cfg.extra, if ever
+   set, outranks everything. */
+export const candidates = () => [...cfg.extra, ...BUILTIN_ENDPOINTS, ...(cfg.base ? [cfg.base] : [])].filter((v, i, a) => v && a.indexOf(v) === i)
 
 const auth = () => ({ Authorization: 'Basic ' + btoa(cfg.user + ':' + cfg.pass) })
 const encPath = p => p.split('/').filter(Boolean).map(encodeURIComponent).join('/')
@@ -30,11 +36,11 @@ export async function dav (method, p, { headers = {}, body } = {}) {
   return request(method, url(p), { headers: { ...auth(), ...headers }, body })
 }
 
-/** First endpoint that answers a PROPFIND wins. Order: user picks, saved, built-ins. */
+/** First endpoint that answers a PROPFIND wins. Order: user picks, built-ins, last used. */
 export async function detect (list = candidates()) {
   for (const b of list) {
     try {
-      const r = await request('PROPFIND', b + '/', { headers: { ...auth(), Depth: '0' } })
+      const r = await request('PROPFIND', b + '/', { headers: { ...auth(), Depth: '0' }, timeout: 6000 })
       if (r.status === 207) return b
     } catch (_) {}
   }
@@ -59,6 +65,22 @@ export async function propfind (p, depth = 1) {
       etag: ((g('getetag') || {}).textContent || '').replace(/"/g, ''),
     }
   }).filter(x => x.name && x.href.replace(/\/+$/, '') !== selfPath)
+}
+
+/** The entry itself (Depth 0): { etag, mtime } of a file or folder, null if it is not there.
+    A folder's ETag moves whenever anything in it is added, replaced or removed (Apache's
+    mod_dav_fs writes by rename, so even a same-size edit counts), which makes this a
+    one-line "did anything change?" before paying for a full listing. */
+export async function stat (p) {
+  const r = await dav('PROPFIND', p + '/', { headers: { Depth: '0', 'Content-Type': 'application/xml' } })
+  if (r.status === 404) return null
+  if (r.status !== 207) throw new Error(`PROPFIND ${p} -> ${r.status}`)
+  const doc = new DOMParser().parseFromString(r.text, 'application/xml')
+  const g = t => doc.getElementsByTagNameNS('DAV:', t)[0]
+  return {
+    etag: ((g('getetag') || {}).textContent || '').replace(/"/g, ''),
+    mtime: Date.parse(((g('getlastmodified') || {}).textContent) || '') || 0,
+  }
 }
 
 export async function mkcol (p) {
@@ -86,5 +108,5 @@ export const put = (p, file, onProgress, key) => uploadFile(url(p), auth(), file
    served straight off the sending device (f.src). Direct bytes ride inside WireGuard. */
 export const srcUrl = f => (f.src ? `http://${f.src.ip}:${f.src.port}/b/${f.src.token}` : url(f.path))
 const srcHeaders = f => (f.src ? {} : auth())
-export const getFile = (f, onProgress, key, saveAs) => downloadFile(srcUrl(f), srcHeaders(f), f.name, onProgress, f.src ? null : key, saveAs)
+export const getFile = (f, onProgress, key, saveAs, dir) => downloadFile(srcUrl(f), srcHeaders(f), f.name, onProgress, f.src ? null : key, saveAs, dir)
 export const fileBytes = f => fetchBytes(srcUrl(f), srcHeaders(f))

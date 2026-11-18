@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- TSDROP: a T, and an S whose lower bowl is the right half of a cloud. The source of every
+       app icon: scripts/make-icons.sh renders the PNG/ICO files from it. -->
+  <rect x="28" y="28" width="456" height="456" rx="30" fill="#6a6865" fill-opacity=".58" stroke="#e6e3df" stroke-opacity=".75" stroke-width="10"/>
+  <g id="mark" transform="translate(0 26)" fill="none" stroke="#f4f2ef" stroke-width="40" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M430 100H340A50 50 0 0 0 290 150A50 50 0 0 0 340 200H350A80 80 0 0 1 430 280A80 80 0 0 1 350 360H128A48 48 0 0 1 128 264A56 56 0 0 1 212 215.5"/>
+    <path d="M84 100H244M164 100V140"/>
+  </g>
+</svg>

@@ -1,7 +1,11 @@
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import Icon from './Icon.jsx'
 
-/** Right-click on desktop, long-press on android. items = [label, fn, danger?][] */
+const ROW = 30
+
+/** Right-click on desktop, long-press on android. items = [label, fn, danger?, icon?][]
+    A dangerous item is set apart by a rule and drawn in brick. */
 export default function Menu ({ at, items, close }) {
   useEffect(() => {
     const off = e => { if (!(e.target.closest && e.target.closest('.cmenu'))) close() }
@@ -13,13 +17,19 @@ export default function Menu ({ at, items, close }) {
     }
   }, [close])
   const list = items.filter(Boolean)
+  const h = list.length * ROW + 10 + (list.some(x => x[2]) ? 9 : 0)
   return createPortal((
-    <div className="cmenu hud" style={{
-      left: Math.min(at.x, window.innerWidth - 150),
-      top: Math.min(at.y, Math.max(4, window.innerHeight - 12 - list.length * 23)),
+    <div className="cmenu hud" role="menu" style={{
+      left: Math.max(4, Math.min(at.x, window.innerWidth - 190)),
+      top: Math.max(4, Math.min(at.y, window.innerHeight - 8 - h)),
     }}>
-      {list.map(([label, fn, danger]) => (
-        <button key={label} className={danger ? 'x' : ''} onClick={() => { close(); fn() }}>{label}</button>
+      {list.map(([label, fn, danger, icon], i) => (
+        <div key={label}>
+          {danger && i > 0 && <hr />}
+          <button role="menuitem" className={danger ? 'x' : ''} onClick={() => { close(); fn() }}>
+            {icon && <Icon n={icon} size={15} />}{label}
+          </button>
+        </div>
       ))}
     </div>
   ), document.body)

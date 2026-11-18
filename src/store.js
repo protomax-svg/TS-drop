@@ -46,9 +46,19 @@ export const readable = c => !locked(c) || keys.has(c.id)
 /* ---------------- chats ---------------- */
 export const ensureRoot = async () => { await dav.mkcol(CHATS); await dav.mkcol(INBOX) }
 
+/* Every 20s the list is reloaded. A container's folder changes ETag when its chat.json is
+   rewritten (rename, rename, edit, reorder all write it), so an unchanged folder means an
+   unchanged chat.json and the copy from last time is reused instead of fetched again. */
+const chatSeen = new Map()      // folder name -> { etag, c }
 export async function loadChats () {
   const rows = await dav.propfind(CHATS, 1)
-  const out = await pmap(rows.filter(r => r.isDir), 6, r => dav.getJson(`${CHATS}/${r.name}/chat.json`))
+  const out = await pmap(rows.filter(r => r.isDir), 6, async r => {
+    const hit = chatSeen.get(r.name)
+    if (hit && r.etag && hit.etag === r.etag) return hit.c
+    const c = await dav.getJson(`${CHATS}/${r.name}/chat.json`)
+    if (c && r.etag) chatSeen.set(r.name, { etag: r.etag, c }); else chatSeen.delete(r.name)
+    return c
+  })
   return out.filter(Boolean).sort((a, b) => (a.ord ?? a.created) - (b.ord ?? b.created))
 }
 
@@ -186,11 +196,26 @@ const unwrap = async (cid, raw) => {
   try { return await C.decryptJson(k, raw.d) } catch (_) { return null }
 }
 
+/* The open container is polled every 3s and every other one every 20s. A full listing of a
+   message folder is ~400 bytes per message, so a busy container cost hundreds of KB a poll -
+   real money on a phone on mobile data. The folder's own ETag says whether anything changed
+   at all, in one tiny reply; the full listing is only fetched when it did, and once a minute
+   regardless, in case a server ever keeps an ETag still when it should not. */
+const seen = new Map()          // cid -> { etag, at } of the last full listing
+const FULL_EVERY = 60000
+
 /** Directory listing is the source of truth. Etags let edited messages come back. */
 export async function syncMessages (cid, chat) {
-  if (locked(chat) && !keys.has(cid)) { mem.set(cid, []); return [] }
-  const rows = (await dav.propfind(`${CHATS}/${cid}/m`, 1)).filter(r => !r.isDir && r.name.endsWith('.json'))
+  // a locked container's list is empty in memory; forget the ETag too, or the first poll
+  // after unlocking would see "unchanged" and hand back that empty list
+  if (locked(chat) && !keys.has(cid)) { mem.set(cid, []); seen.delete(cid); return [] }
+  const dir = `${CHATS}/${cid}/m`
+  const last = seen.get(cid)
+  const head = await dav.stat(dir).catch(() => null)
+  if (head && head.etag && last && last.etag === head.etag && Date.now() - last.at < FULL_EVERY && mem.has(cid)) return mem.get(cid)
+  const rows = (await dav.propfind(dir, 1)).filter(r => !r.isDir && r.name.endsWith('.json'))
   const have = new Map(cached(cid).map(m => [m.id, m]))
+  let missed = false
   const got = await pmap(rows, 8, async r => {
     const id = r.name.slice(0, -5)
     const old = have.get(id)
@@ -198,10 +223,13 @@ export async function syncMessages (cid, chat) {
     if (old && old._s === stamp) return old
     const m = await unwrap(cid, await dav.getJson(`${CHATS}/${cid}/m/${id}.json`))
     // a hiccup on one GET must not make a message vanish from the list
+    if (!m) missed = true
     return m ? { ...m, _s: stamp } : (old || null)
   })
   const list = got.filter(Boolean).sort((a, b) => a.ts - b.ts)
   store(cid, list, locked(chat))
+  // only a listing that fully landed counts as "seen"; a failed GET is retried next poll
+  if (head && head.etag && !missed) seen.set(cid, { etag: head.etag, at: Date.now() }); else seen.delete(cid)
   return list
 }
 

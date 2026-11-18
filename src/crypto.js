@@ -20,10 +20,10 @@ export const unb64 = s => {
 }
 export const rand = n => crypto.getRandomValues(new Uint8Array(n))
 
-export async function deriveKey (password, saltB64) {
+export async function deriveKey (password, saltB64, iter = ITER) {
   const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits'])
   const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: unb64(saltB64), iterations: ITER, hash: 'SHA-256' }, base, 256)
+    { name: 'PBKDF2', salt: unb64(saltB64), iterations: iter, hash: 'SHA-256' }, base, 256)
   return new Uint8Array(bits)
 }
 
@@ -46,14 +46,16 @@ export async function decryptBytes (raw, buf) {
 export const encryptJson = async (raw, o) => b64(await encryptBytes(raw, enc.encode(JSON.stringify(o))))
 export const decryptJson = async (raw, s) => JSON.parse(dec.decode(await decryptBytes(raw, unb64(s))))
 
-/** What a locked chat stores so a password can be checked without a server round trip. */
-export async function newLock (password) {
+/** What a locked chat stores so a password can be checked without a server round trip.
+    The iteration count travels with the lock, so a vault can cost more than a chat does
+    and an old lock still opens with the count it was made at. */
+export async function newLock (password, iter = ITER) {
   const salt = b64(rand(16))
-  const key = await deriveKey(password, salt)
-  return { lock: { v: 1, salt, check: b64(await encryptBytes(key, enc.encode('tsdrop'))) }, key }
+  const key = await deriveKey(password, salt, iter)
+  return { lock: { v: 1, salt, it: iter, check: b64(await encryptBytes(key, enc.encode('tsdrop'))) }, key }
 }
 export async function unlock (lock, password) {
-  const key = await deriveKey(password, lock.salt)
+  const key = await deriveKey(password, lock.salt, lock.it || ITER)
   try {
     if (dec.decode(await decryptBytes(key, unb64(lock.check))) !== 'tsdrop') return null
     return key

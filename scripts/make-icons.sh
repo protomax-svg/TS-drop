@@ -3,7 +3,9 @@
 #
 #   desktop   build/icon.png, build/icon.ico, public/icon.png, electron/icon.png
 #   tray      electron/tray.png, electron/tray@2x.png
-#   android   mipmap-*/ic_launcher{,_background,_foreground,_mono}.png, drawable*/splash.png
+#   android   drawable/ic_launcher_mark.xml (the adaptive icon's foreground and monochrome layer,
+#             a vector so it stays sharp), mipmap-*/ic_launcher.png (pre-Android 8),
+#             drawable*/splash.png (pre-Android 12; 12+ shows the adaptive icon)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -14,9 +16,6 @@ SPLASH='#2c2f33' # colorPrimaryDark, the window colour the app opens on
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 png() { rsvg-convert -w "$2" -h "$2" "$1" -o "$3"; }
-
-# the mark alone, centred in the 66dp safe zone of a 108dp adaptive canvas
-sed -e 's|<rect [^>]*/>||' -e 's|viewBox="0 0 512 512"|viewBox="-88 -89 690 690"|' "$SRC" > "$tmp/mark.svg"
 
 png "$SRC" 512 build/icon.png
 cp build/icon.png public/icon.png
@@ -29,10 +28,16 @@ magick "$tmp"/ico-{16,24,32,48,64,128,256}.png build/icon.ico
 for d in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
   dir=$RES/mipmap-${d%%:*} s=${d##*:}
   png "$SRC" "$s" "$dir/ic_launcher.png"
-  png "$tmp/mark.svg" "$s" "$dir/ic_launcher_foreground.png"
-  cp "$dir/ic_launcher_foreground.png" "$dir/ic_launcher_mono.png"
-  magick -size "${s}x$s" "xc:$TILE" "$dir/ic_launcher_background.png"
 done
+node scripts/logo-vector.mjs "$SRC" > "$RES/drawable/ic_launcher_mark.xml"
+cat > "$RES/mipmap-anydpi-v26/ic_launcher.xml" <<'XML'
+<?xml version="1.0" encoding="utf-8"?>
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background"/>
+    <foreground android:drawable="@drawable/ic_launcher_mark"/>
+    <monochrome android:drawable="@drawable/ic_launcher_mark"/>
+</adaptive-icon>
+XML
 printf '<?xml version="1.0" encoding="utf-8"?><resources><color name="ic_launcher_background">%s</color></resources>\n' "$TILE" \
   > "$RES/values/ic_launcher_background.xml"
 

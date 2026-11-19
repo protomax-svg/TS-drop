@@ -160,6 +160,7 @@ export default function Attachment ({ f, chatKey, onSave, onZoom, onFull, onShee
   // an oversized original stays a row until asked for; that one pull leaves a thumbnail behind
   const [force, setForce] = useState(false)
   const [near, setNear] = useState(false)
+  const [nat, setNat] = useState(0)       // width/height, read off the picture when the message has none
   const box = useRef(null)
   // a video shows its thumbnail and nothing else: the clip itself only ever opens full size
   const want = (inlineOk || force || (playable && small)) && near
@@ -191,14 +192,17 @@ export default function Attachment ({ f, chatKey, onSave, onZoom, onFull, onShee
   const heal = () => { if (!broke) { setBroke(true); retry() } }
 
   // the placeholder holds the picture's own shape from the start, so nothing jumps when it fills
-  const shape = f.w && f.h ? { '--ar': `${f.w} / ${f.h}` } : null
+  const ratio = f.w && f.h ? f.w / f.h : nat
+  const shape = ratio ? { '--ar': String(ratio), '--arn': String(ratio) } : null
+  // small pictures and direct sends carry no size; the first load tells it, once
+  const measure = e => { const t = e.currentTarget; if (!ratio && t.naturalWidth && t.naturalHeight) setNat(t.naturalWidth / t.naturalHeight) }
 
   /* A video tile is its thumbnail plus a play mark. The clip itself is never pulled into the
      stream - 90MB per tile is what made it crawl - it opens full size with the pipe to itself. */
   if (playable) {
     return (
-      <div className="att hud vtile" ref={box} style={shape} onClick={() => onZoom(f)} onContextMenu={ctx}>
-        {url && <img src={url} alt={f.name} decoding="async" onError={heal} />}
+      <div className="att hud pic vtile" ref={box} style={shape} onClick={() => onZoom(f)} onContextMenu={ctx}>
+        {url && <img src={url} alt={f.name} decoding="async" onError={heal} onLoad={measure} />}
         <span className="vplay"><Icon n="play" size={18} fill /></span>
         <div className="cap">{f.name} · {fmtSize(f.size)}</div>
         {mine}
@@ -219,10 +223,10 @@ export default function Attachment ({ f, chatKey, onSave, onZoom, onFull, onShee
   )
 
   return (
-    <div className="att hud" ref={box} style={shape}>
+    <div className={'att hud' + (kind === 'image' ? ' pic' : '')} ref={box} style={shape}>
       {!url && !err && <div className="ph">{want ? 'Loading…' : fmtSize(f.size)}</div>}
       {err && <button className="ph err" onClick={retry}>{err} · tap to retry</button>}
-      {url && kind === 'image' && <img className="zin" src={url} alt={f.name} decoding="async" onError={heal} onClick={() => onZoom(f)} onContextMenu={ctx} />}
+      {url && kind === 'image' && <img className="zin" src={url} alt={f.name} decoding="async" onError={heal} onLoad={measure} onClick={() => onZoom(f)} onContextMenu={ctx} />}
       {url && kind === 'audio' && <audio src={url} controls onContextMenu={ctx} />}
       <div className="cap" title="Right-click or long-press to save">{f.name} · {fmtSize(f.size)}{f.src ? ' · direct from ' + (f.src.dev || 'another device') : ''}</div>
       {mine}

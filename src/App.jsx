@@ -30,6 +30,9 @@ const PAGE = 50
    window dragged wider by its right edge does not always re-evaluate one, so the list kept
    hiding in a window with room for it. 850 leaves the chat ~670px beside the 168px column. */
 const NARROW = 850
+/* Android has no top bar: the container header carries the menu, search, codes and settings,
+   so the container name sits at the very top of the screen. */
+const PHONE = PLATFORM === 'android'
 const widthNow = el => Math.max(el ? el.getBoundingClientRect().width : 0,
   typeof window !== 'undefined' ? window.innerWidth || 0 : 0,
   typeof document !== 'undefined' ? document.documentElement.clientWidth || 0 : 0)
@@ -77,6 +80,7 @@ export default function App () {
   const [toast, setToast] = useState(null)
   const [drag, setDrag] = useState(false)
   const [sideOpen, setSideOpen] = useState(false)
+  const [findOpen, setFindOpen] = useState(false)   // phone: the search row under the header
   const [narrow, setNarrow] = useState(() => widthNow() < NARROW)
   const [sel, setSel] = useState([])
   const [editMsg, setEditMsg] = useState(null)
@@ -483,27 +487,35 @@ export default function App () {
   const pd = e => e.preventDefault()
   const msgMenu = (e, m) => { e.preventDefault(); setMmenu({ x: e.clientX, y: e.clientY, m }) }
 
+  const clearFind = () => { setQ(''); setTags([]); setKind('all') }
+  const searchBox = (
+    <div className="q hud">
+      <Icon n="search" size={15} />
+      <input ref={qRef} value={q} onChange={e => setQ(e.target.value)} aria-label="Search" autoFocus={PHONE}
+        placeholder={scope === 'all' ? 'Search all containers' : 'Search this container'} />
+      {searching && <button className="mb" title="Clear search" onClick={clearFind}><Icon n="x" size={14} /></button>}
+      <Seg value={scope} onChange={setScope} label="Search in" options={[['chat', 'Here'], ['all', 'All']]} />
+    </div>
+  )
+  // closing the phone's search row also drops the search, or the list stays filtered unseen
+  const toggleFind = () => { if (findOpen || searching) { setFindOpen(false); clearFind() } else setFindOpen(true) }
+
   return (
-    <div className={'app' + (narrow ? ' narrow' : '')} ref={appRef}>
-      <div className="top hud flat">
+    <div className={'app' + (narrow ? ' narrow' : '') + (PHONE ? ' phone' : '')} ref={appRef}>
+      {!PHONE && <div className="top hud flat">
         <button className="icobtn menu" onClick={() => setSideOpen(v => !v)} title="Containers" aria-label="Containers"><Icon n="menu" size={18} /></button>
         <div className="brand" title={ts && ts.tailnet ? ts.tailnet : ''}><Logo size={20} /><b>TSDROP</b></div>
-        <div className="q hud">
-          <Icon n="search" size={15} />
-          <input ref={qRef} value={q} onChange={e => setQ(e.target.value)} aria-label="Search"
-            placeholder={scope === 'all' ? 'Search all containers' : 'Search this container'} />
-          {searching && <button className="mb" title="Clear search" onClick={() => { setQ(''); setTags([]); setKind('all') }}><Icon n="x" size={14} /></button>}
-          <Seg value={scope} onChange={setScope} label="Search in" options={[['chat', 'Here'], ['all', 'All']]} />
-        </div>
+        {searchBox}
         <button className={'stat ' + stat[0]} onClick={() => setModal('setup')} title={stat[2]}><i /><span>{stat[1]}</span></button>
         <button className="icobtn" onClick={() => setModal('vault')} title="Authenticator · 2FA codes" aria-label="Authenticator"><Icon n="shield" size={18} /></button>
         <button className="icobtn" onClick={() => setModal('setup')} title="Settings" aria-label="Settings"><Icon n="settings" size={18} /></button>
         {IS_DESKTOP && <button className="icobtn x" onClick={hideWindow} title="Hide · Ctrl+Insert" aria-label="Hide"><Icon n="x" size={18} /></button>}
-      </div>
+      </div>}
 
       {sideOpen && <div className="sideshade" onPointerDown={() => setSideOpen(false)} />}
 
-      <div className={'side hud' + (sideOpen ? ' open' : '')}>
+      <div className={'side hud' + (sideOpen ? ' open' : '')}
+        onClick={e => { if (sideOpen && (e.target === e.currentTarget || e.target.matches('.chats,.chips'))) setSideOpen(false) }}>
         <div className="sec">Containers<span className="grow" />
           <button className="icobtn" title="New container" aria-label="New container" onClick={() => setModal({ edit: null })}><Icon n="plus" size={16} /></button>
         </div>
@@ -533,15 +545,23 @@ export default function App () {
       <div className="main hud" onDragOver={e => { e.preventDefault(); setDrag(true) }}
         onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setDrag(false) }} onDrop={onDrop}>
         <div className="mtop">
+          {PHONE && <button className="icobtn menu" onClick={() => setSideOpen(v => !v)} title="Containers" aria-label="Containers"><Icon n="menu" size={18} /></button>}
           <div className="ttl">
             {chat && <span className="pip" style={{ color: accentOf(chat.accent) }} />}
             <b>{chat ? chat.name : 'No container'}</b>
             {chat && locked(chat) && <Icon n={shut ? 'lock' : 'unlock'} size={14} title={shut ? 'Private · locked' : 'Private · unlocked'} />}
-            <span className="tag-n">{searching ? `${view.length} found` : mode === 'gallery' ? `${media.length} item${media.length === 1 ? '' : 's'}` : `${view.length} message${view.length === 1 ? '' : 's'}`}</span>
+            {!PHONE && <span className="tag-n">{searching ? `${view.length} found` : mode === 'gallery' ? `${media.length} item${media.length === 1 ? '' : 's'}` : `${view.length} message${view.length === 1 ? '' : 's'}`}</span>}
           </div>
           {!shut && <Seg value={mode} onChange={setMode} label="View" options={[['chat', narrow ? '' : 'Messages', 'chat'], ['gallery', narrow ? '' : 'Gallery', 'image']]} />}
-          {chat && <button className="icobtn" title="Edit container" aria-label="Edit container" onClick={() => setModal({ edit: chat })}><Icon n="edit" size={16} /></button>}
+          {!PHONE && chat && <button className="icobtn" title="Edit container" aria-label="Edit container" onClick={() => setModal({ edit: chat })}><Icon n="edit" size={16} /></button>}
+          {PHONE && <>
+            <button className={'icobtn' + (findOpen || searching ? ' on' : '')} onClick={toggleFind} title="Search" aria-label="Search"><Icon n="search" size={18} /></button>
+            <button className="icobtn" onClick={() => setModal('vault')} title="Authenticator · 2FA codes" aria-label="Authenticator"><Icon n="shield" size={18} /></button>
+            {/* settings and the connection state were two buttons to the same sheet: one now, with a dot */}
+            <button className={'icobtn setst ' + stat[0]} onClick={() => setModal('setup')} title={stat[2]} aria-label={'Settings · ' + stat[1]}><Icon n="settings" size={18} /><i /></button>
+          </>}
         </div>
+        {PHONE && (findOpen || searching) && <div className="findrow">{searchBox}</div>}
 
         {status === 'ok' && where === 'laptop' && (
           <div className="banner warn"><Icon n="laptop" size={16} />
@@ -596,7 +616,8 @@ export default function App () {
               <div key={m.id} id={'m-' + m.id}
                 className={'msg hud' + (m.author === me ? ' mine' : '') + (sel.includes(m.id) ? ' picked' : '') + (editMsg === m.id ? ' editing' : '') +
                   (picking === m.id ? ' selectable' : '') +
-                  ((m.files || []).some(f => ['image', 'video'].includes(kindOf(f.name))) ? ' media' : '')}
+                  ((m.files || []).some(f => ['image', 'video'].includes(kindOf(f.name))) ? ' media' : '') +
+                  ((m.files || []).filter(f => ['image', 'video'].includes(kindOf(f.name))).length === 1 ? ' one' : '')}
                 onClick={e => { if (sel.length && !e.target.closest('button,input,textarea,a,img,video,audio')) pick1(m) }}
                 onContextMenu={e => msgMenu(e, m)}>
                 <div className="mhead">

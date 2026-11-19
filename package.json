@@ -15,7 +15,7 @@
     "sync:android": "vite build && cap sync android",
     "apk": "vite build && cap sync android && cd android && ./gradlew assembleDebug",
     "selftest": "node selftest.mjs",
-    "test": "node src/share.test.mjs && node src/totp.test.mjs && node src/vault.test.mjs",
+    "test": "node src/share.test.mjs && node src/totp.test.mjs && node src/vault.test.mjs && node src/offsite.test.mjs",
     "dist": "vite build && electron-builder --linux --win"
   },
   "dependencies": {
@@ -24,7 +24,11 @@
     "@capacitor/core": "^8.5.0",
     "@capacitor/share": "^8.0.1",
     "@capawesome/capacitor-file-picker": "^8.0.4",
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "exceljs": "^4.4.0",
+    "fzstd": "^0.1.1",
+    "megajs": "^1.3.10",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

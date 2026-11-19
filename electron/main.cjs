@@ -263,6 +263,24 @@ ipcMain.handle('dav:download', async (_e, o) => {
   return r.canceled || !r.filePath ? null : fetchTo(o, r.filePath)
 })
 
+/* Bytes the page already holds (a file read back out of the MEGA backup): same places and
+   naming as a download. */
+ipcMain.handle('saveBytes', async (_e, { name, data, saveAs, dir: into }) => {
+  let out
+  if (saveAs) {
+    const r = await dialog.showSaveDialog(win, { defaultPath: path.join(downloadDir(), name) })
+    if (r.canceled || !r.filePath) return null
+    out = r.filePath
+  } else {
+    const dir = into && isDir(into) ? into : downloadDir()
+    out = path.join(dir, name)
+    let n = 1
+    while (fs.existsSync(out)) { const x = path.parse(name); out = path.join(dir, `${x.name} (${n++})${x.ext}`) }
+  }
+  await fs.promises.writeFile(out, Buffer.from(data))
+  return out
+})
+
 const fetchTo = ({ id, url, headers, name, key, dir: into }, pick) => new Promise((res, rej) => {
   const dir = into && isDir(into) ? into : downloadDir()
   let out = pick || path.join(dir, name)

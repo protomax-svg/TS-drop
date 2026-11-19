@@ -100,21 +100,89 @@ const Row = ({ f, onSave, onOpen, extra }) => (
   </div>
 )
 
-/** Full size overlay for one container's media. Arrows, wheel and keys move through it. */
+/* Full window viewer for one container's media, the way Telegram does it: the picture fits the
+   window, the wheel (or a trackpad pinch) zooms at the cursor, a double click or double tap
+   toggles a close-up, two fingers pinch, a zoomed picture drags around, and at fit a swipe
+   sideways moves through the album while a swipe down closes. A tap beside the picture closes.
+
+   The view is { s, x, y }: zoom over "fits the window" and a pan in px from the centre. The
+   picture is laid out at its fitted size and only ever transformed, so zooming never reflows. */
+const ZMAX = 8
+const STEP = 1.6                        // one press of + or -
 export function Lightbox ({ list, i, setI, chatKey, close, onSave, onFull }) {
   const f = list[i]
   const kind = kindOf(f.name)
+  const vid = kind === 'video'
   const [full, err, retry] = useBlob(f, chatKey, true, PRI.open, onFull && (bytes => onFull(f, bytes)))
   const url = full || (hasThumb(f) ? cache.get(thumbPath(f.path)) : null) || null
   const [menu, setMenu] = useState(null)
-  const step = useRef(0)
-  const go = d => setI(x => (x + d + list.length) % list.length)
+  const stage = useRef(null)
+  const [box, setBox] = useState({ w: 0, h: 0 })
+  const [ratio, setRatio] = useState(0)
+  const [v, setV] = useState({ s: 1, x: 0, y: 0 })
+  const [anim, setAnim] = useState(false)
+  const [held, setHeld] = useState(false)
+  const pts = useRef(new Map())          // pointer id -> [x, y] of every finger down
+  const g = useRef(null)                 // the gesture running now
+  const tapAt = useRef(null)             // the last tap, for a double tap
+
+  const many = list.length > 1
+  const go = d => { if (many) setI(x => (x + d + list.length) % list.length) }
+
+  useEffect(() => {
+    const el = stage.current
+    const ro = new ResizeObserver(() => setBox({ w: el.clientWidth, h: el.clientHeight }))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  // every picture opens at fit; the shape is known from the message before a byte arrives
+  useEffect(() => { setV({ s: 1, x: 0, y: 0 }); setAnim(false); setRatio(f.w && f.h ? f.w / f.h : 0) }, [i, list])
+
+  const fit = ratio && box.w && box.h
+    ? (box.w / box.h > ratio ? { w: box.h * ratio, h: box.h } : { w: box.w, h: box.w / ratio })
+    : null
+  // a zoomed picture may not be dragged past its own edge; at fit it stays centred
+  const clamp = (s, x, y) => {
+    s = Math.min(ZMAX, Math.max(1, s))
+    if (!fit) return { s, x: 0, y: 0 }
+    const mx = Math.max(0, (fit.w * s - box.w) / 2)
+    const my = Math.max(0, (fit.h * s - box.h) / 2)
+    return { s, x: Math.min(mx, Math.max(-mx, x)), y: Math.min(my, Math.max(-my, y)) }
+  }
+  // zoom to s2 keeping the point (cx, cy) - px from the centre - where it is on screen
+  const zoomAt = (o, s2, cx = 0, cy = 0) => {
+    const k = Math.min(ZMAX, Math.max(1, s2)) / o.s
+    return clamp(o.s * k, cx - (cx - o.x) * k, cy - (cy - o.y) * k)
+  }
+  const at = (px, py) => { const b = stage.current.getBoundingClientRect(); return [px - b.left - b.width / 2, py - b.top - b.height / 2] }
+  const live = useRef({})
+  live.current = { v, zoomAt, vid }
+
+  // the wheel zooms; React's onWheel is passive and could not stop the page from scrolling
+  useEffect(() => {
+    const el = stage.current
+    const h = e => {
+      const L = live.current
+      if (L.vid) return
+      e.preventDefault()
+      const d = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY
+      const [cx, cy] = at(e.clientX, e.clientY)
+      setAnim(false)
+      setV(o => L.zoomAt(o, o.s * Math.exp(-d * (e.ctrlKey ? 0.012 : 0.0022)), cx, cy))
+    }
+    el.addEventListener('wheel', h, { passive: false })
+    return () => el.removeEventListener('wheel', h)
+  }, [])
 
   useEffect(() => {
     const h = e => {
+      const L = live.current
       if (e.key === 'Escape') close()
       else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { e.preventDefault(); go(1) }
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') { e.preventDefault(); go(-1) }
+      else if (e.key === '+' || e.key === '=') { setAnim(true); setV(o => L.zoomAt(o, o.s * STEP)) }
+      else if (e.key === '-' || e.key === '_') { setAnim(true); setV(o => L.zoomAt(o, o.s / STEP)) }
+      else if (e.key === '0') { setAnim(true); setV({ s: 1, x: 0, y: 0 }) }
       else return
       e.stopPropagation()
     }
@@ -122,25 +190,107 @@ export function Lightbox ({ list, i, setI, chatKey, close, onSave, onFull }) {
     return () => window.removeEventListener('keydown', h, true)
   }, [close, list.length])
 
-  // one notch per gesture: a trackpad fires dozens of small deltas per flick
-  const wheel = e => {
-    if (e.timeStamp - step.current < 260) return
-    step.current = e.timeStamp
-    go(e.deltaY > 0 || e.deltaX > 0 ? 1 : -1)
+  const pinchFrom = () => {
+    const [a, b] = [...pts.current.values()]
+    return { t: 'pinch', d0: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, m0: at((a[0] + b[0]) / 2, (a[1] + b[1]) / 2), s0: v.s, x0: v.x, y0: v.y }
   }
+  const oneFrom = (px, py, onImg) => ({ t: 'one', sx: px, sy: py, x0: v.x, y0: v.y, moved: false, axis: null, onImg })
+
+  const down = e => {
+    if (e.button > 0 || e.target.closest('button')) return
+    if (vid) { if (e.target === e.currentTarget) close(); return }
+    stage.current.setPointerCapture(e.pointerId)
+    pts.current.set(e.pointerId, [e.clientX, e.clientY])
+    setAnim(false)
+    if (pts.current.size === 2) g.current = pinchFrom()
+    else if (pts.current.size === 1) g.current = oneFrom(e.clientX, e.clientY, e.target.tagName === 'IMG')
+  }
+  const move = e => {
+    if (!pts.current.has(e.pointerId)) return
+    pts.current.set(e.pointerId, [e.clientX, e.clientY])
+    const G = g.current
+    if (!G) return
+    if (G.t === 'pinch') {
+      if (pts.current.size < 2) return
+      const [a, b] = [...pts.current.values()]
+      const m = at((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+      const s2 = Math.min(ZMAX, Math.max(1, G.s0 * Math.hypot(a[0] - b[0], a[1] - b[1]) / G.d0))
+      const k = s2 / G.s0
+      // the spot that was under the fingers stays under them while they move apart and travel
+      setV(clamp(s2, m[0] - (G.m0[0] - G.x0) * k, m[1] - (G.m0[1] - G.y0) * k))
+      return
+    }
+    const dx = e.clientX - G.sx; const dy = e.clientY - G.sy
+    if (!G.moved && Math.hypot(dx, dy) < 6) return
+    G.moved = true
+    if (v.s > 1.01) { setHeld(true); setV(clamp(v.s, G.x0 + dx, G.y0 + dy)); return }
+    // at fit the picture follows the finger along one axis: sideways to change, down to close
+    G.axis = G.axis || (Math.abs(dx) > Math.abs(dy) ? 'x' : 'y')
+    setV({ s: 1, x: G.axis === 'x' ? dx : 0, y: G.axis === 'y' ? dy : 0 })
+  }
+  const up = (e, cancel) => {
+    if (!pts.current.has(e.pointerId)) return
+    pts.current.delete(e.pointerId)
+    const G = g.current
+    setHeld(false)
+    if (G && G.t === 'pinch') {
+      // one finger left on the glass carries on as a drag
+      if (pts.current.size === 1) { const [p] = [...pts.current.values()]; g.current = { ...oneFrom(p[0], p[1], false), moved: true } } else g.current = null
+      return
+    }
+    g.current = null
+    if (!G) return
+    if (G.moved && v.s <= 1.01) {
+      const dx = e.clientX - G.sx; const dy = e.clientY - G.sy
+      setAnim(true)
+      if (!cancel && G.axis === 'x' && Math.abs(dx) > 70 && many) { go(dx < 0 ? 1 : -1); return }
+      if (!cancel && G.axis === 'y' && dy > 110) { close(); return }
+      setV({ s: 1, x: 0, y: 0 })
+      return
+    }
+    if (G.moved || cancel) return
+    // a tap: beside the picture closes, twice on the picture zooms in or back out
+    if (!G.onImg) { close(); return }
+    const now = Date.now(); const last = tapAt.current
+    if (last && now - last.t < 320 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 30) {
+      tapAt.current = null
+      const [cx, cy] = at(e.clientX, e.clientY)
+      setAnim(true)
+      setV(o => (o.s > 1.01 ? { s: 1, x: 0, y: 0 } : zoomAt(o, 2.5, cx, cy)))
+    } else tapAt.current = { t: now, x: e.clientX, y: e.clientY }
+  }
+
+  const btnZoom = k => { setAnim(true); setV(o => zoomAt(o, o.s * k)) }
   const ctx = e => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY }) }
+  const zoomed = v.s > 1.01
+  const fade = !zoomed && v.y > 0 ? Math.max(0.35, 1 - v.y / 400) : 1
 
   return createPortal((
-    <div className="lbox" onWheel={wheel} onPointerDown={e => e.target === e.currentTarget && close()}>
-      {!url && !err && <div className="ph">Loading…</div>}
-      {err && <button className="ph err" onClick={retry}>{err} · tap to retry</button>}
-      {url && (kind === 'video'
-        ? <video src={url} controls autoPlay playsInline onContextMenu={ctx} />
-        : <img src={url} alt={f.name} decoding="async" onContextMenu={ctx} />)}
-      {list.length > 1 && <button className="lnav p" onClick={() => go(-1)} title="Previous" aria-label="Previous"><Icon n="chevL" size={20} /></button>}
-      {list.length > 1 && <button className="lnav n" onClick={() => go(1)} title="Next" aria-label="Next"><Icon n="chevR" size={20} /></button>}
-      <div className="lcap">{f.name}{list.length > 1 ? ` · ${i + 1} of ${list.length}` : ''}</div>
-      <button className="lx" onClick={close} title="Close · Esc" aria-label="Close"><Icon n="x" size={18} /></button>
+    <div className="lbox" style={{ '--lfade': fade }}>
+      <div ref={stage} className={'lstage' + (vid ? ' vid' : '') + (zoomed ? ' zoomed' : '') + (held ? ' held' : '')}
+        onPointerDown={down} onPointerMove={move} onPointerUp={e => up(e)} onPointerCancel={e => up(e, true)}>
+        {!url && !err && <div className="ph">Loading…</div>}
+        {err && <button className="ph err" onClick={retry}>{err} · tap to retry</button>}
+        {url && (vid
+          ? <video src={url} controls autoPlay playsInline onContextMenu={ctx} />
+          : <img src={url} alt={f.name} decoding="async" draggable={false} onContextMenu={ctx}
+              onLoad={e => { const t = e.currentTarget; if (t.naturalWidth && t.naturalHeight) setRatio(t.naturalWidth / t.naturalHeight) }}
+              style={fit
+                ? { width: fit.w, height: fit.h, transform: `translate(${v.x}px, ${v.y}px) scale(${v.s})`, transition: anim ? 'transform .2s ease' : 'none' }
+                : { maxWidth: '100%', maxHeight: '100%' }} />)}
+      </div>
+      <div className="ltop">
+        <div className="lname">{f.name}{many && <span>{i + 1} of {list.length}</span>}</div>
+        {!vid && <>
+          <button className="lbtn" onClick={() => btnZoom(1 / STEP)} disabled={!zoomed} title="Zoom out · −" aria-label="Zoom out"><Icon n="minus" size={18} /></button>
+          <button className="lpct" onClick={() => { setAnim(true); setV({ s: 1, x: 0, y: 0 }) }} title="Fit to window · 0">{Math.round(v.s * 100)}%</button>
+          <button className="lbtn" onClick={() => btnZoom(STEP)} disabled={v.s >= ZMAX} title="Zoom in · +" aria-label="Zoom in"><Icon n="plus" size={18} /></button>
+        </>}
+        <button className="lbtn" onClick={() => onSave(f)} title="Save" aria-label="Save"><Icon n="download" size={18} /></button>
+        <button className="lbtn" onClick={close} title="Close · Esc" aria-label="Close"><Icon n="x" size={20} /></button>
+      </div>
+      {many && !zoomed && <button className="lnav p" onClick={() => go(-1)} title="Previous" aria-label="Previous"><Icon n="chevL" size={22} /></button>}
+      {many && !zoomed && <button className="lnav n" onClick={() => go(1)} title="Next" aria-label="Next"><Icon n="chevR" size={22} /></button>}
       {menu && <Menu at={menu} items={[
         ['Save as…', () => onSave(f), false, 'download'],
         url && kind === 'image' && ['Copy image', () => copyImage(url), false, 'copy'],

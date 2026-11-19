@@ -74,6 +74,30 @@ export async function createChat (name, accent, password) {
   return c
 }
 export const saveChat = c => dav.putJson(`${CHATS}/${c.id}/chat.json`, c)
+/* ---------------- disk use ----------------
+   What a container holds on the server: its messages (chats/<id>) and its files with their
+   thumbnails (inbox/<id>/<message>/). One Depth: infinity listing when the server allows it;
+   Apache's WebDAV refuses that by default, so then the folders are walked one level at a
+   time - a few ms a request, well under a second for a few hundred messages. */
+async function treeSize (p) {
+  let rows = null
+  try { rows = await dav.propfind(p, 'infinity') } catch (_) {}
+  if (rows) return rows.reduce((t, r) => (r.isDir ? t : { bytes: t.bytes + r.size, files: t.files + 1 }), { bytes: 0, files: 0 })
+  const walk = async q => {
+    const here = await dav.propfind(q, 1)
+    const t = { bytes: 0, files: 0 }
+    for (const r of here) if (!r.isDir) { t.bytes += r.size; t.files++ }
+    for (const s of await pmap(here.filter(r => r.isDir), 8, r => walk(`${q}/${r.name}`))) { t.bytes += s.bytes; t.files += s.files }
+    return t
+  }
+  return walk(p)
+}
+/** { bytes, files, msgBytes }: files are what was sent (with thumbnails), msgBytes the messages. */
+export async function containerUse (cid) {
+  const [m, f] = await Promise.all([treeSize(`${CHATS}/${cid}`), treeSize(`${INBOX}/${cid}`)])
+  return { bytes: m.bytes + f.bytes, files: f.files, msgBytes: m.bytes }
+}
+
 export async function deleteChat (id) {
   await dav.del(`${CHATS}/${id}`)
   await dav.del(`${INBOX}/${id}`)

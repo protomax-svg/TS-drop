@@ -110,6 +110,19 @@ export async function downloadFile (url, headers, name, onProgress, key, saveAs,
   } finally { prog.delete(url) }
 }
 
+/** Save bytes the page already holds, where downloadFile would have put them. Returns the
+    path, or null when a save dialog was cancelled. */
+export async function saveBytes (name, bytes, saveAs, dir) {
+  if (E) return E.saveBytes({ name, data: bytes, saveAs, dir })
+  if (NATIVE) return (await Dav.saveBytes({ name, data: b64(bytes) })).path
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([bytes]))
+  a.download = name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000)
+  return name
+}
+
 /** Put the picture already on screen on the clipboard. Returns true when it landed. */
 export async function copyImage (url) {
   if (!url) return false

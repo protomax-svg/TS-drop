@@ -164,7 +164,6 @@ button:disabled{cursor:default;opacity:.45}
 .chat.hud{background:transparent;border-color:transparent}
 .chat:hover{color:var(--txt);background:var(--glass)}
 .chat.sel{color:var(--txt);background:var(--glass-2);border-color:transparent}
-.chat.sel::before{content:"";position:absolute;left:-1px;top:7px;bottom:7px;width:3px;border-radius:0;background:var(--accent)}
 .pip{width:8px;height:8px;flex:none;border-radius:50%;background:currentColor}
 .chat .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:500}
 .chat.sel .nm{font-weight:600}
@@ -236,6 +235,13 @@ button:disabled{cursor:default;opacity:.45}
 .file .ico{color:var(--dim);display:grid}
 .bar{height:3px;background:var(--hair);margin-top:5px;border-radius:1px;overflow:hidden}
 .bar i{display:block;height:100%;background:var(--accent);transition:width .15s}
+/* Settings, disk use: one row per container, a bar against the biggest */
+.duse{display:flex;flex-direction:column;min-width:0}
+.duse .row{flex-wrap:nowrap;gap:8px;font-size:12.5px}
+.duse-n{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.duse-f{font-size:11px;color:var(--dim);white-space:nowrap}
+.duse b{font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;min-width:62px;text-align:right}
+.duse .bar{margin-top:3px}
 
 /* ---- composer ---- */
 .comp{margin:0 8px 8px;min-width:0;padding:8px 9px;display:flex;flex-direction:column;gap:7px}
@@ -422,19 +428,31 @@ textarea.field{height:auto;padding:7px 10px}
 .att .zin{cursor:zoom-in}
 .att img,.att video,.lbox img,.lbox video{-webkit-touch-callout:none;user-select:none}
 .vwrap{position:relative;display:block;line-height:0}
-.lbox{position:fixed;inset:0;z-index:60;background:var(--lbox);display:grid;place-items:center;
-  padding:calc(48px + var(--safe-area-inset-top)) 56px calc(44px + var(--safe-area-inset-bottom))}
-.lbox img,.lbox video{max-width:100%;max-height:100%;object-fit:contain;border-radius:1px}
-.lbox .lx,.lnav{display:grid;place-items:center;width:40px;height:40px;border-radius:var(--r2);color:#f5f3f0;
-  background:rgba(255,255,255,.08);border:1px solid transparent}
-.lbox .lx{position:absolute;top:calc(10px + var(--safe-area-inset-top));right:12px}
-.lbox .lx:hover,.lnav:hover{background:rgba(255,255,255,.18)}
+.lbox{position:fixed;inset:0;z-index:60;overflow:hidden;user-select:none}
+/* the backdrop thins out while a picture is swiped down to close */
+.lbox::before{content:"";position:absolute;inset:0;background:var(--lbox);opacity:var(--lfade,1)}
+/* the stage is the whole window: the picture fits it and the bars float over it */
+.lstage{position:absolute;inset:0;display:grid;place-items:center;overflow:hidden;touch-action:none}
+.lstage.vid{touch-action:auto;padding:calc(56px + var(--safe-area-inset-top)) 0 calc(8px + var(--safe-area-inset-bottom))}
+.lstage img{display:block;max-width:none;transform-origin:50% 50%;will-change:transform;cursor:zoom-in}
+.lstage.zoomed img{cursor:grab}
+.lstage.held img{cursor:grabbing}
+.lstage video{max-width:100%;max-height:100%}
 .lbox .ph{font-size:11px;font-weight:600;letter-spacing:.08em;color:rgba(245,243,240,.7);text-transform:uppercase}
-.lnav{position:absolute;top:50%;transform:translateY(-50%)}
-.lnav.p{left:10px}
-.lnav.n{right:10px}
-.lcap{position:absolute;left:0;right:0;bottom:calc(12px + var(--safe-area-inset-bottom));text-align:center;
-  font-size:11.5px;color:rgba(245,243,240,.75);padding:0 60px;overflow-wrap:anywhere}
+.ltop{position:absolute;left:0;right:0;top:0;z-index:2;display:flex;align-items:center;gap:4px;pointer-events:none;
+  padding:calc(8px + var(--safe-area-inset-top)) calc(8px + var(--safe-area-inset-right)) 8px calc(14px + var(--safe-area-inset-left))}
+.ltop>*{pointer-events:auto}
+.lname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;font-weight:600;color:#f5f3f0;
+  text-shadow:0 1px 3px rgba(0,0,0,.8);pointer-events:none}
+.lname span{margin-left:10px;font-weight:500;color:rgba(245,243,240,.7)}
+.lbtn,.lpct,.lnav{display:grid;place-items:center;height:38px;border-radius:var(--r2);color:#f5f3f0;background:rgba(20,20,22,.55)}
+.lbtn{width:38px}
+.lpct{min-width:52px;padding:0 6px;font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums}
+.lbtn:hover,.lpct:hover,.lnav:hover{background:rgba(20,20,22,.8)}
+.lbtn:disabled{opacity:.4}
+.lnav{position:absolute;top:50%;transform:translateY(-50%);z-index:2;width:42px;height:42px}
+.lnav.p{left:calc(10px + var(--safe-area-inset-left))}
+.lnav.n{right:calc(10px + var(--safe-area-inset-right))}
 
 /* context menu: icons on the left, danger last and in brick */
 .cmenu{position:fixed;z-index:70;padding:4px;min-width:170px}

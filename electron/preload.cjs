@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('tsdrop', {
   upload: o => ipcRenderer.invoke('dav:upload', o),
   download: o => ipcRenderer.invoke('dav:download', o),
   bytes: o => ipcRenderer.invoke('dav:bytes', o),
+  saveBytes: o => ipcRenderer.invoke('saveBytes', o),
   read: p => ipcRenderer.invoke('read', p),
   fileUrl: p => { try { return pathToFileURL(p).href } catch (e) { return null } },
   og: u => ipcRenderer.invoke('og', u),

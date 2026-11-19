@@ -1,4 +1,5 @@
-import { request, uploadFile, downloadFile, fetchBytes } from './bridge'
+import { request, uploadFile, downloadFile, fetchBytes, saveBytes } from './bridge'
+import { decryptBytes, unb64 } from './crypto'
 
 /* Your own tailnet addresses, comma separated, from .env at build time.
    Nothing personal is committed; empty is fine, then you type it in Setup once. */
@@ -32,7 +33,20 @@ const encPath = p => p.split('/').filter(Boolean).map(encodeURIComponent).join('
 export const url = p => cfg.base + '/' + encPath(p)
 export const authHeaders = auth
 
+/* With no server answering, the app can read the last MEGA snapshot instead (offsite.js).
+   While it is set, every read below comes from that snapshot and every write is refused:
+   there is nowhere to write to, and the snapshot is frozen anyway. */
+let off = null
+export const offsite = () => off
+export const setOffsite = v => { off = v }
+const readOnly = () => Object.assign(new Error('Read only: this is the MEGA backup. Changes need a server.'), { status: 403 })
+
 export async function dav (method, p, { headers = {}, body } = {}) {
+  if (off) {
+    if (method !== 'GET') throw readOnly()
+    const t = await off.text(p)
+    return t == null ? { status: 404, text: '' } : { status: 200, text: t }
+  }
   return request(method, url(p), { headers: { ...auth(), ...headers }, body })
 }
 
@@ -48,6 +62,7 @@ export async function detect (list = candidates()) {
 }
 
 export async function propfind (p, depth = 1) {
+  if (off) return off.list(p, depth)
   const r = await dav('PROPFIND', p + '/', { headers: { Depth: String(depth), 'Content-Type': 'application/xml' } })
   if (r.status === 404) return []
   if (r.status !== 207) throw new Error(`PROPFIND ${p} -> ${r.status}`)
@@ -72,6 +87,7 @@ export async function propfind (p, depth = 1) {
     mod_dav_fs writes by rename, so even a same-size edit counts), which makes this a
     one-line "did anything change?" before paying for a full listing. */
 export async function stat (p) {
+  if (off) return off.stat(p)
   const r = await dav('PROPFIND', p + '/', { headers: { Depth: '0', 'Content-Type': 'application/xml' } })
   if (r.status === 404) return null
   if (r.status !== 207) throw new Error(`PROPFIND ${p} -> ${r.status}`)
@@ -84,6 +100,7 @@ export async function stat (p) {
 }
 
 export async function mkcol (p) {
+  if (off) throw readOnly()
   const r = await dav('MKCOL', p)
   if (r.status === 201 || r.status === 405) return true
   throw new Error(`MKCOL ${p} -> ${r.status}`)
@@ -102,11 +119,16 @@ export const del = p => dav('DELETE', p)
 /** Server side move. Nothing is downloaded or uploaded again. */
 export const move = (from, to) => dav('MOVE', from, { headers: { Destination: url(to), Overwrite: 'T' } })
 
-export const put = (p, file, onProgress, key) => uploadFile(url(p), auth(), file, onProgress, key)
+export const put = (p, file, onProgress, key) => (off ? Promise.reject(readOnly()) : uploadFile(url(p), auth(), file, onProgress, key))
 
 /* An attachment is either in the cloud (f.path, encrypted if the chat is locked) or
    served straight off the sending device (f.src). Direct bytes ride inside WireGuard. */
 export const srcUrl = f => (f.src ? `http://${f.src.ip}:${f.src.port}/b/${f.src.token}` : url(f.path))
 const srcHeaders = f => (f.src ? {} : auth())
-export const getFile = (f, onProgress, key, saveAs, dir) => downloadFile(srcUrl(f), srcHeaders(f), f.name, onProgress, f.src ? null : key, saveAs, dir)
-export const fileBytes = f => fetchBytes(srcUrl(f), srcHeaders(f))
+export async function getFile (f, onProgress, key, saveAs, dir) {
+  if (!off || f.src) return downloadFile(srcUrl(f), srcHeaders(f), f.name, onProgress, f.src ? null : key, saveAs, dir)
+  let bytes = await off.bytes(f.path, onProgress)
+  if (key) bytes = await decryptBytes(unb64(key), bytes)
+  return saveBytes(f.name, bytes, saveAs, dir)
+}
+export const fileBytes = f => (off && !f.src ? off.bytes(f.path) : fetchBytes(srcUrl(f), srcHeaders(f)))

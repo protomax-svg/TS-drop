@@ -812,4 +812,44 @@ public class DavPlugin extends Plugin {
             }
         }).start();
     }
+
+    /** Bytes the page already holds (a file read back out of the MEGA backup), saved where a
+        download would land: the gallery for media, Downloads for the rest. */
+    @PluginMethod
+    public void saveBytes(PluginCall call) {
+        final String name = call.getString("name", "file");
+        final String data = call.getString("data");
+        if (data == null) { call.reject("data is required"); return; }
+        new Thread(() -> {
+            File out = null;
+            Uri gallery = null;
+            String scan = null;
+            try {
+                byte[] raw = Base64.decode(data, Base64.NO_WRAP);
+                String mime = mimeOf(name);
+                if (Build.VERSION.SDK_INT >= 29) gallery = newStoreEntry(name, mime);
+                if (gallery == null) { out = legacyPublicFile(mime, name); if (out != null) scan = mime; }
+                if (gallery == null && out == null) {
+                    File dir = new File(getContext().getExternalFilesDir(null), "tsdrop");
+                    if (!dir.exists() && !dir.mkdirs()) { call.reject("cannot create " + dir); return; }
+                    out = unique(dir, name);
+                }
+                OutputStream sink = gallery != null
+                    ? getContext().getContentResolver().openOutputStream(gallery)
+                    : new FileOutputStream(out);
+                if (sink == null) { call.reject("cannot open the output file"); return; }
+                try (OutputStream os = sink) { os.write(raw); }
+                if (gallery != null) publish(gallery);
+                if (scan != null) MediaScannerConnection.scanFile(getContext(), new String[]{ out.getAbsolutePath() }, new String[]{ scan }, null);
+                JSObject o = new JSObject();
+                o.put("path", gallery != null ? gallery.toString() : out.getAbsolutePath());
+                o.put("name", name);
+                call.resolve(o);
+            } catch (Exception e) {
+                if (out != null) { try { out.delete(); } catch (Exception ignored) {} }
+                if (gallery != null) { try { getContext().getContentResolver().delete(gallery, null, null); } catch (Exception ignored) {} }
+                call.reject(msg(e));
+            }
+        }).start();
+    }
 }

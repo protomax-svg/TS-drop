@@ -419,6 +419,26 @@ way in is a single point of failure, whoever wrote it.
 QR reading uses the browser's own decoder on Android. Chromium has none on Linux, so the
 desktop shells out to **zbar** (`sudo pacman -S zbar`); without it, paste the link instead.
 
+## When every server is down: the MEGA copy
+
+Containers, folders and the vault switched to **Back up to MEGA** go there every hour,
+encrypted on the server first (`celephais-tsdrop-offsite`, in Cloud_infrastructure). That
+copy is a restic repository of its own, `tsdrop-restic`, and the app can read it back.
+
+* The server leaves `/.offsite.json` in TSDROP's root: a **read-only MEGA folder link** to the
+  repository and its restic password. Every device copies it whenever it reaches a server.
+* When no server answers, the app opens the newest snapshot straight from MEGA. Everything
+  backed up is there, pictures and files included, **read only**: the composer is hidden,
+  any change is refused, and the servers are retried every 20 seconds.
+* Settings → MEGA backup → **Open the MEGA backup** does the same by hand, to check it works.
+* The link cannot delete anything, and the password opens TSDROP's repository only, not
+  the cloud share's backups. Keep both (`/etc/celephais/tsdrop-restic.*` on the host) in a
+  password manager too.
+
+`src/restic.js` reads the repository format (scrypt key, AES-256-CTR + Poly1305-AES, zstd,
+packs read by range; reads asked for together come down as one range per pack).
+`src/offsite.test.mjs` builds a repository by the format spec and reads it back.
+
 ---
 
 ## Develop
@@ -491,6 +511,9 @@ $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager platform-tools "platforms;andr
 | `selftest.mjs` | the check, including crypto interop |
 | `src/totp.test.mjs` | the RFC vectors (`npm test`) |
 | `src/vault.test.mjs` | the vault against a fake server (`npm test`) |
+| `src/offsite.js` | the MEGA copy as a read-only server, when none answers |
+| `src/restic.js` | reads a restic repository: keys, index, trees, file bytes |
+| `src/offsite.test.mjs` | that reader against a repository built by the spec (`npm test`) |
 
 No credentials are in this repo. The Nextcloud app password is typed on first run and kept in
 local storage on that device; your tailnet addresses come from `.env`, which is gitignored.

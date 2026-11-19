@@ -14,10 +14,11 @@ import {
   ensureRoot, loadChats, createChat, saveChat, deleteChat,
   syncMessages, sendMessage, updateMessage, deleteMessage, cached,
   hashtags, search, fmtSize, KINDS, linksIn, allTags, moveMessages, kindOf, backfillThumb,
-  getKey, hasKey, setKey, forgetKey, purgeStoredKeys, locked, readable,
+  getKey, hasKey, setKey, forgetKey, purgeStoredKeys, locked, readable, containerUse,
 } from './store'
 import { PLATFORM, IS_DESKTOP, pickFiles, pasteFiles, clipboardImage, dropFiles, tailscale, reveal, hideWindow, ensureStorage, copyText, pickDir, getDownloadDir, setDownloadDir, requestMedia, shareTo, CAN_SHARE, desktopTheme, onDesktopTheme } from './bridge'
 import * as omarchy from './omarchy'
+import * as offsite from './offsite'
 import { filesOf, textOf, saveAll } from './share'
 import { loadSync, saveSync, runSync, validTarget } from './sync'
 
@@ -97,6 +98,8 @@ export default function App () {
   const [mode, setMode] = useState(() => localStorage.getItem('tsdrop.view') === 'gallery' ? 'gallery' : 'chat')
   const [picking, setPicking] = useState(null)      // the one message whose text is selectable on a phone
   const [conn, setConn] = useState(0)               // bumped to run the connect sequence again
+  const [megaAt, setMegaAt] = useState(0)            // time of the MEGA snapshot being read, 0 = not reading one
+  const megaPin = useRef(false)                      // opened by hand in Settings: stay until "Back to the server"
   const streamRef = useRef(null); const qRef = useRef(null); const taRef = useRef(null)
   const appRef = useRef(null)
 
@@ -149,18 +152,44 @@ export default function App () {
     if (!dav.ready()) { setStatus('fail'); setModal('setup'); say('Enter the server password in Settings', true); return }
     let live = true
     ;(async () => {
-      const base = await dav.detect()
+      const base = megaPin.current ? null : await dav.detect()
       if (!live) return
-      if (!base) { setStatus('fail'); say('No server answered. Open Settings to check the address.', true); return }
+      if (!base) {
+        if (!offsite.saved()) { setStatus('fail'); say('No server answered. Open Settings to check the address.', true); return }
+        // no server: the last MEGA snapshot, read only
+        if (!dav.offsite()) {
+          setStatus('wait')
+          if (!megaPin.current) say('No server answered · opening the MEGA backup')
+          const v = await offsite.connect()
+          if (!live) return
+          dav.setOffsite(v)
+          setMegaAt(v.time)
+        }
+        setStatus('mega')
+        const cs = await loadChats()
+        if (!live) return
+        setChats(cs)
+        setCid(c => (cs.some(x => x.id === c) ? c : (cs[0] || {}).id))
+        return
+      }
+      if (dav.offsite()) { dav.setOffsite(null); setMegaAt(0); say('Back on the server') }
       applyCfg({ ...dav.getCfg(), base })
       setStatus('ok')
       await ensureRoot()
+      // the MEGA link and password, kept on this device for the day no server answers
+      dav.getJson('.offsite.json').then(offsite.remember).catch(() => {})
       let cs = await loadChats()
       if (!cs.length) cs = [await createChat('GENERAL', ACCENTS[0])]
       if (!live) return
       setChats(cs)
       setCid(c => (cs.some(x => x.id === c) ? c : cs[0].id))
-    })().catch(e => { setStatus('fail'); say(String(e.message || e), true) })
+    })().catch(e => {
+      const pinned = megaPin.current
+      if (dav.offsite() || pinned) { dav.setOffsite(null); setMegaAt(0); megaPin.current = false }
+      say(String(e.message || e), true)
+      // opened by hand and it failed: go straight back to the server rather than sit offline
+      if (pinned) setConn(n => n + 1); else setStatus('fail')
+    })
     return () => { live = false }
   }, [cfg.pass, conn])
 
@@ -169,7 +198,7 @@ export default function App () {
      the laptop copy, so this both falls over to the laptop and comes home again by itself. */
   useEffect(() => {
     if (!dav.ready()) return
-    if (status === 'fail') {
+    if (status === 'fail' || (status === 'mega' && !megaPin.current)) {
       const h = setInterval(async () => { if (await dav.detect()) setConn(n => n + 1) }, 20000)
       return () => clearInterval(h)
     }
@@ -190,10 +219,11 @@ export default function App () {
   useEffect(() => { tailscale().then(t => { setTs(t); if (t && t.self && !dav.getCfg().me) applyCfg({ ...dav.getCfg(), me: t.self.split('.')[0] }) }) }, [])
 
   useEffect(() => {
-    if (status !== 'ok' || !cid || !chat) return
+    if ((status !== 'ok' && status !== 'mega') || !cid || !chat) return
     let live = true
-    const tick = () => syncMessages(cid, chat).then(l => live && setAll(a => ({ ...a, [cid]: l }))).catch(() => {})
-    tick(); const h = setInterval(tick, 3000)
+    const tick = () => syncMessages(cid, chat).then(l => live && setAll(a => ({ ...a, [cid]: l }))).catch(e => { if (status === 'mega') say(String(e.message || e), true) })
+    tick(); if (status === 'mega') return () => { live = false }    // a snapshot does not change
+    const h = setInterval(tick, 3000)
     return () => { live = false; clearInterval(h) }
   }, [status, cid, chat, unlocks])
 
@@ -219,7 +249,7 @@ export default function App () {
   }, [chats])
 
   useEffect(() => {
-    if (status !== 'ok') return
+    if (status !== 'ok' && status !== 'mega') return
     let live = true
     const tick = async () => {
       const cs = await loadChats(); if (!live || dragId.current) return
@@ -230,7 +260,9 @@ export default function App () {
         setAll(a => ({ ...a, [c.id]: l }))
       }
     }
-    tick().catch(() => {}); const h = setInterval(() => tick().catch(() => {}), 20000)
+    tick().catch(() => {})
+    if (status === 'mega') return () => { live = false }
+    const h = setInterval(() => tick().catch(() => {}), 20000)
     return () => { live = false; clearInterval(h) }
   }, [status, cid, unlocks])
 
@@ -481,7 +513,9 @@ export default function App () {
   const jump = id => { const el = document.getElementById('m-' + id); if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('flash'); setTimeout(() => el.classList.remove('flash'), 900) } }
 
   const where = serverOf(cfg.base)
-  const stat = status === 'ok'
+  const megaWhen = megaAt ? new Date(megaAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
+  const stat = status === 'mega' ? ['warn', 'MEGA backup', `Reading the MEGA backup from ${megaWhen}. Read only.`]
+    : status === 'ok'
     ? (where === 'laptop' ? ['warn', 'Laptop copy', 'The server is unreachable; working from the laptop copy'] : ['ok', 'Server', 'Connected to the server'])
     : status === 'wait' ? ['', 'Connecting', 'Looking for the server'] : ['bad', 'Offline', 'No server answered. Open Settings to check the address.']
   const pd = e => e.preventDefault()
@@ -566,6 +600,11 @@ export default function App () {
         {status === 'ok' && where === 'laptop' && (
           <div className="banner warn"><Icon n="laptop" size={16} />
             <span><b>Working from the laptop copy.</b> The server can't be reached. You can read everything and add new things; they move to the server when it is back.</span>
+          </div>
+        )}
+        {status === 'mega' && (
+          <div className="banner warn"><Icon n="cloudUp" size={16} />
+            <span><b>Reading the MEGA backup from {megaWhen}.</b> {megaPin.current ? 'Opened from Settings.' : 'No server answered.'} Read only: only containers switched to MEGA are here, and nothing can be sent until a server is back.</span>
           </div>
         )}
         {status === 'fail' && (
@@ -683,7 +722,7 @@ export default function App () {
           </>
         )}
 
-        {!shut && mode === 'chat' && (
+        {!shut && mode === 'chat' && status !== 'mega' && (
           <div className="comp hud">
             {reply && (
               <div className="rbar">
@@ -778,7 +817,12 @@ export default function App () {
       )}
 
       {modal === 'vault' && <Vault say={say} close={() => setModal(null)} />}
-      {modal === 'setup' && <Setup cfg={cfg} applyCfg={applyCfg} ts={ts} status={status} setStatus={setStatus} say={say} theme={theme} desk={desk} close={() => setModal(null)} />}
+      {modal === 'setup' && <Setup chats={chats} cfg={cfg} applyCfg={applyCfg} ts={ts} status={status} setStatus={setStatus} say={say} theme={theme} desk={desk} close={() => setModal(null)}
+        mega={{
+          at: megaAt,
+          open: () => { megaPin.current = true; setModal(null); setConn(n => n + 1) },
+          leave: () => { megaPin.current = false; setConn(n => n + 1) },
+        }} />}
       {modal && modal.edit !== undefined && (
         <ChatEdit chat={modal.edit} chats={chats} preset={modal.parent} close={() => setModal(null)} say={say}
           hasMsgs={!!(modal.edit && (all[modal.edit.id] || []).length)}
@@ -1084,6 +1128,28 @@ function Storage ({ say }) {
   )
 }
 
+/* Reading the MEGA copy back. The link and password come from the server (offsite.js), so
+   there is nothing to type; this only says whether this device has them, and lets you
+   open the backup by hand to see that it works before the day it has to. */
+function MegaRead ({ status, mega }) {
+  const have = !!offsite.saved()
+  const when = mega.at ? new Date(mega.at).toLocaleString() : ''
+  return (
+    <div className="card">
+      <div className="note">
+        {status === 'mega' ? <>Showing the snapshot from <b>{when}</b>. Only containers, folders and the vault switched to MEGA are in it.</>
+          : have ? 'This device has the read-only link to the backup. If no server answers, TSDROP opens the newest MEGA snapshot by itself: what is switched to MEGA, read only.'
+            : 'This device has no link to the backup yet. It arrives from the server once the server is set up for it.'}
+      </div>
+      <div className="row">
+        {status === 'mega'
+          ? <button className="btn sm" onClick={mega.leave}><Icon n="server" size={13} />Back to the server</button>
+          : have && <button className="btn sm" onClick={mega.open}><Icon n="cloudUp" size={13} />Open the MEGA backup</button>}
+      </div>
+    </div>
+  )
+}
+
 /* Which top-level folders in files/ also go to MEGA. Off unless switched on here. The switch
    is a hidden .tsbackup marker in the folder (listDir skips dot-files), which the server's
    hourly MEGA job looks for. Containers and the vault have their own switches. */
@@ -1119,7 +1185,52 @@ function MegaFolders ({ say }) {
   )
 }
 
-function Setup ({ cfg, applyCfg, ts, status, setStatus, say, theme, desk, close }) {
+/* How much each container takes on the server, biggest first. Counted once per run of the app
+   (a walk of every folder), kept until Recount. A sub-container counts on its own. */
+let diskSeen = null
+function DiskUse ({ chats }) {
+  const [use, setUse] = useState(() => diskSeen || {})
+  const [busy, setBusy] = useState(false)
+  const count = async () => {
+    setBusy(true)
+    const out = {}
+    // one container at a time, each walked 8 requests wide, so the list fills in as it goes
+    for (const c of chats) {
+      out[c.id] = await containerUse(c.id).catch(() => null)
+      setUse({ ...out })
+    }
+    diskSeen = out
+    setBusy(false)
+  }
+  useEffect(() => { if (!diskSeen) count() }, [])
+
+  const name = c => { const p = c.parent && chats.find(x => x.id === c.parent); return p ? p.name + ' › ' + c.name : c.name }
+  const rows = chats.filter(c => use[c.id]).sort((a, b) => use[b.id].bytes - use[a.id].bytes)
+  const top = rows.length ? use[rows[0].id].bytes || 1 : 1
+  const total = rows.reduce((t, c) => t + use[c.id].bytes, 0)
+  return (
+    <div className="card">
+      <div className="row">
+        <span className="lab grow">{busy ? `Counting… ${Object.keys(use).length} of ${chats.length}` : `${fmtSize(total)} in ${rows.length} container${rows.length === 1 ? '' : 's'}`}</span>
+        <button className="btn sm" disabled={busy} onClick={count}><Icon n="refresh" size={14} />Recount</button>
+      </div>
+      {rows.map(c => (
+        <div key={c.id} className="duse" title={`${use[c.id].files} file${use[c.id].files === 1 ? '' : 's'} · ${fmtSize(use[c.id].bytes - use[c.id].msgBytes)} · messages ${fmtSize(use[c.id].msgBytes)}`}>
+          <div className="row">
+            <span className="pip" style={{ color: accentOf(c.accent) }} />
+            <span className="grow duse-n">{name(c)}</span>
+            <span className="duse-f">{use[c.id].files} file{use[c.id].files === 1 ? '' : 's'}</span>
+            <b>{fmtSize(use[c.id].bytes)}</b>
+          </div>
+          <div className="bar"><i style={{ width: Math.max(1, (use[c.id].bytes / top) * 100) + '%' }} /></div>
+        </div>
+      ))}
+      {chats.some(c => use[c.id] === null) && <div className="note">Some containers could not be counted. Recount to try again.</div>}
+    </div>
+  )
+}
+
+function Setup ({ chats, cfg, applyCfg, ts, status, setStatus, say, theme, desk, close, mega }) {
   const [url, setUrl] = useState(cfg.base || '')
   const [me, setMe] = useState(cfg.me || '')
   const [pass, setPass] = useState(cfg.pass || '')
@@ -1129,12 +1240,15 @@ function Setup ({ cfg, applyCfg, ts, status, setStatus, say, theme, desk, close 
   const test = async b => {
     setScan('Testing ' + b)
     const hit = await dav.detect([b])
-    if (hit) { applyCfg({ ...dav.getCfg(), base: hit, me: me.trim() || cfg.me }); setStatus('ok'); await ensureRoot().catch(() => {}); setScan('Connected · ' + hit); say('Server address set') } else setScan('No answer from ' + b)
+    if (hit && status === 'mega') { applyCfg({ ...dav.getCfg(), base: hit, me: me.trim() || cfg.me }); mega.leave(); setScan('Connected · ' + hit) }
+    else if (hit) { applyCfg({ ...dav.getCfg(), base: hit, me: me.trim() || cfg.me }); setStatus('ok'); await ensureRoot().catch(() => {}); setScan('Connected · ' + hit); say('Server address set') } else setScan('No answer from ' + b)
   }
   const rescan = async () => {
     setScan('Looking for a server…')
     const hit = await dav.detect(dav.candidates())
-    if (hit) { applyCfg({ ...dav.getCfg(), base: hit }); setUrl(hit); setStatus('ok'); await ensureRoot().catch(() => {}); setScan('Found · ' + hit) } else { setStatus('fail'); setScan('Nothing answered') }
+    if (hit && status === 'mega') { applyCfg({ ...dav.getCfg(), base: hit }); setUrl(hit); mega.leave(); setScan('Found · ' + hit) }
+    else if (hit) { applyCfg({ ...dav.getCfg(), base: hit }); setUrl(hit); setStatus('ok'); await ensureRoot().catch(() => {}); setScan('Found · ' + hit) }
+    else { if (status !== 'mega') setStatus('fail'); setScan('Nothing answered') }
   }
   const where = serverOf(cfg.base)
   const setTheme = next => applyCfg({ ...dav.getCfg(), theme: next, light: next === 'light' })
@@ -1144,13 +1258,14 @@ function Setup ({ cfg, applyCfg, ts, status, setStatus, say, theme, desk, close 
       <div className="h3">Connection</div>
       <div className="card">
         <div className="row">
-          <Icon n={status !== 'ok' ? 'warn' : where === 'laptop' ? 'laptop' : 'server'} size={18} />
+          <Icon n={status === 'mega' ? 'cloudUp' : status !== 'ok' ? 'warn' : where === 'laptop' ? 'laptop' : 'server'} size={18} />
           <div className="grow">
             <div style={{ fontWeight: 600 }}>
-              {status === 'ok' ? (where === 'laptop' ? 'Working from the laptop copy' : 'Connected to the server') : status === 'wait' ? 'Connecting…' : 'Offline'}
+              {status === 'mega' ? 'Reading the MEGA backup' : status === 'ok' ? (where === 'laptop' ? 'Working from the laptop copy' : 'Connected to the server') : status === 'wait' ? 'Connecting…' : 'Offline'}
             </div>
             <div className="note">
-              {status === 'ok' && where === 'laptop' ? 'The server did not answer. New things you add here move to the server when it is back.'
+              {status === 'mega' ? 'Read only, frozen at the last hourly snapshot. Retrying the servers every 20 seconds.'
+                : status === 'ok' && where === 'laptop' ? 'The server did not answer. New things you add here move to the server when it is back.'
                 : status === 'ok' ? 'The laptop keeps a copy, updated every 5 minutes, and takes over if the server is down.'
                   : 'No server answered. Check the address and the password below.'}
             </div>
@@ -1164,6 +1279,9 @@ function Setup ({ cfg, applyCfg, ts, status, setStatus, say, theme, desk, close 
         </div>
         {scan && <div className="note">{scan}</div>}
       </div>
+
+      <div className="h3">MEGA backup</div>
+      <MegaRead status={status} mega={mega} />
 
       <div className="h3">This device</div>
       <div className="card">
@@ -1203,6 +1321,9 @@ function Setup ({ cfg, applyCfg, ts, status, setStatus, say, theme, desk, close 
           )}
         </div>
       )}
+
+      <div className="h3">Disk use</div>
+      <DiskUse chats={chats} />
 
       <div className="h3">Storage and backup</div>
       <Storage say={say} />

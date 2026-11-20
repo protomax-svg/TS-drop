@@ -9,7 +9,8 @@
        "root": "/mnt/hdd/tsdrop/data" }                   where TSDROP's data sits in a snapshot
 
    The app copies it to this device whenever a server answers, so it is still here on the day
-   none does. The folder link can only read, so a lost phone cannot delete the backups, and
+   none does. A device that never met the server can take the link and password typed in by
+   hand instead (adopt), checked against the backup before they are kept. The folder link can only read, so a lost phone cannot delete the backups, and
    the repository holds nothing but TSDROP, so it cannot open the cloud share's backups.
 
    What comes out is the same shape dav.js gives for the server - listings, JSON, file
@@ -32,6 +33,44 @@ export function remember (o) {
   put(CFG, JSON.stringify({ link: o.link, password: o.password, root: o.root || '/mnt/hdd/tsdrop/data' }))
   put(MK, null)
 }
+
+/* Typed in by hand, for a device that never met the server: a new phone on the day the
+   server is gone, with the link and password from wherever they were written down. */
+const LINK = /^https:\/\/mega(?:\.co)?\.nz\/(?:folder\/[\w-]+#[\w-]+|#F![\w-]+![\w-]+)$/
+
+/** What is wrong with a typed link, or '' when it looks like a MEGA folder link. */
+export function linkProblem (link) {
+  const l = (link || '').trim()
+  if (!l) return 'Paste the MEGA folder link'
+  if (!/^https:\/\/mega(\.co)?\.nz\//.test(l)) return 'That is not a mega.nz link'
+  if (!l.includes('#')) return 'The link is missing its key: the part after # must be included'
+  if (!LINK.test(l)) return 'That is not a MEGA folder link (https://mega.nz/folder/…#…)'
+  return ''
+}
+
+/** Check the link and password against the backup itself, and keep them only if it opens.
+    Returns the opened snapshot, so the app can show it without unlocking a second time.
+    backend is for the tests. */
+export async function adopt ({ link, password, root }, backend) {
+  const o = { link: (link || '').trim(), password: password || '', root: (root || '').trim() || '/mnt/hdd/tsdrop/data' }
+  if (!backend) { const bad = linkProblem(o.link); if (bad) throw new Error(bad) }
+  if (!o.password) throw new Error('Type the backup password')
+  // A remembered master key would open the repository without looking at the password, so a
+  // mistyped password would be kept. Forget it first; the password has to prove itself.
+  const oldMk = get(MK)
+  put(MK, null)
+  try {
+    const v = await connect(o, backend)
+    put(CFG, JSON.stringify(o))
+    return v
+  } catch (e) {
+    put(MK, oldMk)
+    throw e
+  }
+}
+
+/** Drop this device's copy of the link and password. The next server visit brings them back. */
+export function forget () { put(CFG, null); put(MK, null) }
 
 /* ---- MEGA as restic storage ---- */
 
@@ -65,7 +104,7 @@ const row = (name, n, href) => ({
 
 /** Open the latest snapshot. backend is for the tests; the app passes nothing and gets MEGA. */
 export async function connect (o = saved(), backend) {
-  if (!o) throw new Error('This device has no MEGA backup details yet. They arrive the next time it reaches a server.')
+  if (!o) throw new Error('This device has no MEGA backup details yet. They arrive the next time it reaches a server, or type them in Settings → MEGA backup.')
   const { unlock, Repo } = await import('./restic.js')
   const b = backend || await megaBackend(o.link)
   const { key, saved: mk } = await unlock(b, o.password, get(MK))

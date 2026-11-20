@@ -141,6 +141,38 @@ assert.equal(again.saved, first.saved)
 const fallback = await unlock(backend, PASSWORD, JSON.stringify({ encrypt: b64(rnd(32)), mac: { k: b64(rnd(16)), r: b64(rnd(16)) } }))
 assert.equal(fallback.saved, first.saved)
 
+// typed in by hand: kept only when the backup opens with them
+{
+  const store = new Map()
+  globalThis.localStorage = { getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: k => store.delete(k) }
+  const { adopt, saved, linkProblem, forget } = await import('./offsite.js')
+  assert.equal(linkProblem('https://mega.nz/folder/AbC-12_x#k3y-_Z'), '')
+  assert.equal(linkProblem(' https://mega.nz/folder/AbC#key '), '', 'spaces around a pasted link are fine')
+  assert.equal(linkProblem('https://mega.nz/#F!AbC!key'), '', 'the old link form')
+  assert.match(linkProblem(''), /Paste/)
+  assert.match(linkProblem('https://mega.nz/folder/AbC'), /after #/)
+  assert.match(linkProblem('https://example.com/folder/AbC#k'), /not a mega/)
+  assert.match(linkProblem('https://mega.nz/file/AbC#k'), /not a MEGA folder link/)
+
+  await assert.rejects(adopt({ link: 'x', password: '' }, backend), /password/)
+  await assert.rejects(adopt({ link: 'x', password: 'wrong' }, backend), /wrong password/)
+  assert.equal(saved(), null, 'a wrong password is not kept')
+
+  const v = await adopt({ link: ' typed ', password: PASSWORD }, backend)
+  assert.equal(v.time, Date.parse(snap.time), 'hands back the opened snapshot')
+  assert.deepEqual(saved(), { link: 'typed', password: PASSWORD, root: '/mnt/hdd/tsdrop/data' })
+
+  // a remembered master key must not let a mistyped password through
+  store.set('tsdrop.offsite.mk', first.saved)
+  await assert.rejects(adopt({ link: 'typed', password: 'typo' }, backend), /wrong password/)
+  assert.equal(saved().password, PASSWORD, 'the good details survive a failed retype')
+  assert.equal(store.get('tsdrop.offsite.mk'), first.saved, 'and so does the remembered key')
+
+  forget()
+  assert.equal(saved(), null)
+  delete globalThis.localStorage
+}
+
 // a flipped byte in a pack is caught, not shown
 const pk = packs[0]
 const f = join(dir, `data/${pk.id.slice(0, 2)}/${pk.id}`)

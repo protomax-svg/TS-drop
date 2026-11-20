@@ -431,9 +431,15 @@ copy is a restic repository of its own, `tsdrop-restic`, and the app can read it
   backed up is there, pictures and files included, **read only**: the composer is hidden,
   any change is refused, and the servers are retried every 20 seconds.
 * Settings → MEGA backup → **Open the MEGA backup** does the same by hand, to check it works.
+* **A device that never met the server** (a new phone after the server is gone) can take the
+  link and password typed in by hand: Settings → MEGA backup → **Enter details by hand**. A
+  fresh install with no server password shows that form straight away. The details are checked
+  against the backup and kept only if it opens; from then on the device opens the backup by
+  itself, and finds the server again once a server password is entered.
 * The link cannot delete anything, and the password opens TSDROP's repository only, not
-  the cloud share's backups. Keep both (`/etc/celephais/tsdrop-restic.*` on the host) in a
-  password manager too.
+  the cloud share's backups. Keep both (`/etc/celephais/tsdrop-restic.*` on the host) outside
+  TSDROP as well, on paper for instance: the vault is inside this backup, so it cannot be the
+  only place that holds the key to it.
 
 `src/restic.js` reads the repository format (scrypt key, AES-256-CTR + Poly1305-AES, zstd,
 packs read by range; reads asked for together come down as one range per pack).

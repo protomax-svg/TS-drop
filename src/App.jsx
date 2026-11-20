@@ -149,10 +149,12 @@ export default function App () {
   useEffect(() => { setLimit(PAGE) }, [q, tags, kind, scope])
 
   useEffect(() => {
-    if (!dav.ready()) { setStatus('fail'); setModal('setup'); say('Enter the server password in Settings', true); return }
+    // no server password: a fresh device. If it has the MEGA details (typed in by hand), it
+    // can still read the backup; otherwise Settings is the only place to go.
+    if (!dav.ready() && !offsite.saved()) { setStatus('fail'); setModal('setup'); say('Enter the server password in Settings, or the MEGA backup details', true); return }
     let live = true
     ;(async () => {
-      const base = megaPin.current ? null : await dav.detect()
+      const base = megaPin.current || !dav.ready() ? null : await dav.detect()
       if (!live) return
       if (!base) {
         if (!offsite.saved()) { setStatus('fail'); say('No server answered. Open Settings to check the address.', true); return }
@@ -189,6 +191,8 @@ export default function App () {
       say(String(e.message || e), true)
       // opened by hand and it failed: go straight back to the server rather than sit offline
       if (pinned) setConn(n => n + 1); else setStatus('fail')
+      // no server password either: Settings is the only way forward
+      if (!dav.ready()) setModal('setup')
     })
     return () => { live = false }
   }, [cfg.pass, conn])
@@ -821,6 +825,10 @@ export default function App () {
         mega={{
           at: megaAt,
           open: () => { megaPin.current = true; setModal(null); setConn(n => n + 1) },
+          // typed-in details, already checked: show that snapshot without unlocking it again.
+          // With a server password this is a deliberate visit, so pin it like open(); without
+          // one there is no server to go back to, and entering a password later leaves MEGA.
+          adopted: v => { dav.setOffsite(v); setMegaAt(v.time); megaPin.current = dav.ready(); setModal(null); setConn(n => n + 1) },
           leave: () => { megaPin.current = false; setConn(n => n + 1) },
         }} />}
       {modal && modal.edit !== undefined && (
@@ -1062,7 +1070,7 @@ function ChatEdit ({ chat, chats, preset, close, onSaved, onDeleted, onLockChang
 
 /* Where downloads land, and the one-way backup of a local folder (or the phone's camera
    roll) up to the server. The upload itself is the same streaming path everything else uses. */
-function Storage ({ say }) {
+function Storage ({ say, status }) {
   const [dir, setDir] = useState('')
   const [s, setS] = useState(loadSync)
   const [run, setRun] = useState(null)
@@ -1123,28 +1131,75 @@ function Storage ({ say }) {
         <div className="note">One way, newest first. A file already sent is skipped by name, size and date.</div>
       </div>}
 
-      <MegaFolders say={say} />
+      <MegaFolders say={say} status={status} />
     </>
   )
 }
 
-/* Reading the MEGA copy back. The link and password come from the server (offsite.js), so
-   there is nothing to type; this only says whether this device has them, and lets you
-   open the backup by hand to see that it works before the day it has to. */
-function MegaRead ({ status, mega }) {
+/* Reading the MEGA copy back. The link and password normally come from the server
+   (offsite.js), so there is nothing to type: this says whether this device has them, and
+   lets you open the backup by hand to see that it works before the day it has to.
+   A device that never met the server - a new phone after the server is gone - can type
+   them in instead; they are checked against the backup before they are kept. */
+function MegaRead ({ status, mega, say }) {
   const have = !!offsite.saved()
   const when = mega.at ? new Date(mega.at).toLocaleString() : ''
+  const [typing, setTyping] = useState(false)
+  const [link, setLink] = useState('')
+  const [pw, setPw] = useState('')
+  const [show, setShow] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const form = typing || (!have && status !== 'mega')
+
+  const go = async () => {
+    const bad = offsite.linkProblem(link)
+    if (bad) { setErr(bad); return }
+    if (!pw) { setErr('Type the backup password'); return }
+    setBusy(true); setErr('')
+    try {
+      const v = await offsite.adopt({ link, password: pw })
+      setPw(''); setTyping(false)
+      say('MEGA backup opened · the details are saved on this device')
+      mega.adopted(v)
+    } catch (e) {
+      setErr(String(e.message || e))
+    } finally { setBusy(false) }
+  }
+
   return (
     <div className="card">
       <div className="note">
         {status === 'mega' ? <>Showing the snapshot from <b>{when}</b>. Only containers, folders and the vault switched to MEGA are in it.</>
           : have ? 'This device has the read-only link to the backup. If no server answers, TSDROP opens the newest MEGA snapshot by itself: what is switched to MEGA, read only.'
-            : 'This device has no link to the backup yet. It arrives from the server once the server is set up for it.'}
+            : 'This device has no link to the backup yet. It arrives from the server once the server is set up for it, or type it in below.'}
       </div>
+      {form && <>
+        <div className="lab">MEGA folder link</div>
+        <input className="field hud" value={link} onChange={e => { setLink(e.target.value); setErr('') }} placeholder="https://mega.nz/folder/…#…"
+          autoCapitalize="off" autoCorrect="off" spellCheck={false} disabled={busy} />
+        <div className="lab">Backup password</div>
+        <div className="row" style={{ flexWrap: 'nowrap' }}>
+          <input className="field hud" type={show ? 'text' : 'password'} value={pw} placeholder="The restic password" disabled={busy}
+            autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
+            onChange={e => { setPw(e.target.value); setErr('') }} onKeyDown={e => e.key === 'Enter' && !busy && go()} />
+          <button className="icobtn" title={show ? 'Hide password' : 'Show password'} onClick={() => setShow(v => !v)}><Icon n="eye" size={16} /></button>
+        </div>
+        {err && <div className="note" role="alert" style={{ color: 'var(--danger)' }}>{err}</div>}
+        {busy && <div className="note">Checking the backup… the first unlock takes a few seconds.</div>}
+      </>}
       <div className="row">
-        {status === 'mega'
-          ? <button className="btn sm" onClick={mega.leave}><Icon n="server" size={13} />Back to the server</button>
-          : have && <button className="btn sm" onClick={mega.open}><Icon n="cloudUp" size={13} />Open the MEGA backup</button>}
+        {form
+          ? <>
+            <button className="btn p sm" onClick={go} disabled={busy}><Icon n="cloudUp" size={13} />{busy ? 'Opening…' : 'Open this backup'}</button>
+            {have && <button className="btn sm" onClick={() => { setTyping(false); setErr(''); setPw('') }} disabled={busy}>Cancel</button>}
+          </>
+          : <>
+            {status === 'mega'
+              ? <button className="btn sm" onClick={mega.leave}><Icon n="server" size={13} />Back to the server</button>
+              : have && <button className="btn sm" onClick={mega.open}><Icon n="cloudUp" size={13} />Open the MEGA backup</button>}
+            <button className="btn sm" onClick={() => setTyping(true)}>Enter details by hand</button>
+          </>}
       </div>
     </div>
   )
@@ -1153,9 +1208,12 @@ function MegaRead ({ status, mega }) {
 /* Which top-level folders in files/ also go to MEGA. Off unless switched on here. The switch
    is a hidden .tsbackup marker in the folder (listDir skips dot-files), which the server's
    hourly MEGA job looks for. Containers and the vault have their own switches. */
-function MegaFolders ({ say }) {
+function MegaFolders ({ say, status }) {
   const [rows, setRows] = useState(null)
+  // the list lives on the server (or in the MEGA snapshot); with neither there is nothing to ask
+  const reach = status === 'ok' || status === 'mega'
   useEffect(() => {
+    if (!reach) return
     let live = true
     ;(async () => {
       const dirs = (await dav.propfind('files', 1)).filter(r => r.isDir && !r.name.startsWith('.'))
@@ -1163,7 +1221,7 @@ function MegaFolders ({ say }) {
       if (live) setRows(out.sort((a, b) => a.name.localeCompare(b.name)))
     })().catch(e => { if (live) { setRows([]); say(String(e.message || e), true) } })
     return () => { live = false }
-  }, [])
+  }, [reach])
   const flip = async (name, on) => {
     const p = `files/${name}/.tsbackup`
     const r = on ? await dav.putJson(p, { on: true, ts: Date.now() }) : await dav.del(p)
@@ -1173,7 +1231,9 @@ function MegaFolders ({ say }) {
   return (
     <div className="card">
       <div className="lab">Back up to MEGA · folders</div>
-      {rows === null
+      {!reach
+        ? <div className="note">Shown once a server answers.</div>
+        : rows === null
         ? <div className="note">Reading folders…</div>
         : !rows.length
             ? <div className="note">No folders in files/ yet.</div>
@@ -1281,7 +1341,7 @@ function Setup ({ chats, cfg, applyCfg, ts, status, setStatus, say, theme, desk,
       </div>
 
       <div className="h3">MEGA backup</div>
-      <MegaRead status={status} mega={mega} />
+      <MegaRead status={status} mega={mega} say={say} />
 
       <div className="h3">This device</div>
       <div className="card">
@@ -1326,7 +1386,7 @@ function Setup ({ chats, cfg, applyCfg, ts, status, setStatus, say, theme, desk,
       <DiskUse chats={chats} />
 
       <div className="h3">Storage and backup</div>
-      <Storage say={say} />
+      <Storage say={say} status={status} />
 
       {IS_DESKTOP && (
         <>
